@@ -17,6 +17,16 @@ _*.py
 patch_*.py
 probe_*.py
 
+# Android 构建产物
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.iml
+*.jks
+*.keystore
+
 # 系统
 .DS_Store
 Thumbs.db

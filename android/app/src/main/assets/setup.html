@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#070a10">
+<title>连接电脑</title>
+<style>
+  :root{
+    --bg:#070a10; --card:#0d1119; --line:rgba(255,255,255,.08);
+    --text:#e6e9f2; --muted:#8b93a8; --accent:#7c5cff; --accent2:#22d3ee;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%}
+  body{
+    background:
+      radial-gradient(900px 480px at 12% -10%, rgba(124,92,255,.20), transparent 60%),
+      radial-gradient(700px 420px at 88% 8%, rgba(34,211,238,.13), transparent 62%),
+      var(--bg);
+    color:var(--text);
+    font:15px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+    padding:calc(env(safe-area-inset-top,0px) + 26px) 20px calc(env(safe-area-inset-bottom,0px) + 26px);
+    display:flex; flex-direction:column; min-height:100%;
+  }
+  .wrap{width:100%;max-width:460px;margin:0 auto;display:flex;flex-direction:column;gap:20px;flex:1}
+
+  .brand{display:flex;align-items:center;gap:12px}
+  .logo{
+    width:46px;height:46px;border-radius:13px;flex:none;
+    background:linear-gradient(135deg,#7c5cff,#22d3ee);
+    display:grid;place-items:center;font-size:23px;color:#fff;
+    box-shadow:0 8px 22px -6px rgba(124,92,255,.6);
+  }
+  .brand h1{margin:0;font-size:18px;font-weight:650;letter-spacing:.2px}
+  .brand p{margin:1px 0 0;font-size:12.5px;color:var(--muted)}
+
+  .card{
+    background:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,.015));
+    border:1px solid var(--line); border-radius:16px; padding:18px;
+    backdrop-filter:blur(10px);
+  }
+  .card h2{margin:0 0 4px;font-size:14.5px;font-weight:600}
+  .card .sub{margin:0 0 14px;font-size:12.5px;color:var(--muted);line-height:1.7}
+
+  label{display:block;font-size:12.5px;color:var(--muted);margin:0 0 7px}
+  input{
+    width:100%; height:48px; padding:0 14px; font-size:16px; color:var(--text);
+    background:#0a0e15; border:1px solid var(--line); border-radius:12px; outline:none;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  input:focus{border-color:rgba(124,92,255,.65);box-shadow:0 0 0 3px rgba(124,92,255,.14)}
+  input::placeholder{color:#4a5265}
+
+  .row{display:flex;gap:10px;margin-top:12px}
+  button{
+    flex:1; height:48px; border:0; border-radius:12px; font-size:15px; font-weight:600;
+    color:#fff; background:linear-gradient(135deg,var(--accent),#6b4ff0);
+    box-shadow:0 8px 20px -8px rgba(124,92,255,.75);
+  }
+  button:active{transform:translateY(1px)}
+  button.ghost{
+    flex:none; padding:0 18px; color:#c3c9d8; background:rgba(255,255,255,.05);
+    border:1px solid var(--line); box-shadow:none;
+  }
+
+  .status{margin-top:12px;font-size:13px;min-height:20px;color:var(--muted)}
+  .status.ok{color:#34d399}
+  .status.bad{color:#f87171}
+
+  ol{margin:0;padding-left:19px;color:var(--muted);font-size:12.5px;line-height:2}
+  ol b{color:#cdd4e4;font-weight:600}
+  code{
+    background:#12161f;border:1px solid var(--line);border-radius:6px;
+    padding:1px 6px;color:#a78bfa;font-size:12px;
+    font-family:ui-monospace,Menlo,Consolas,monospace;
+  }
+  .foot{margin-top:auto;text-align:center;font-size:11.5px;color:#4a5265;padding-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="brand">
+    <div class="logo">♫</div>
+    <div>
+      <h1>音乐下载台</h1>
+      <p>连接到电脑上的那台 · <span id="ver">v1.1.6</span></p>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>电脑地址</h2>
+    <p class="sub">在电脑软件的「设置 → 手机访问」里能看到这个地址，通常是 <code>192.168.x.x:8899</code>。</p>
+    <label for="addr">IP:端口</label>
+    <input id="addr" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false"
+           placeholder="192.168.1.5:8899">
+    <div class="row">
+      <button id="btnGo">连接</button>
+      <button class="ghost" id="btnPaste">粘贴</button>
+    </div>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="card">
+    <h2>怎么找这个地址</h2>
+    <ol>
+      <li>电脑上打开 <b>音乐下载台</b></li>
+      <li>右上角 <b>设置</b> → 勾上 <b>允许同一 Wi-Fi 下的手机访问</b></li>
+      <li>重启软件，设置里会出现 <b>二维码和地址</b></li>
+      <li>手机连同一个 Wi-Fi，把地址填到上面</li>
+    </ol>
+  </div>
+
+  <div class="foot">地址只存在这台手机上，不会上传到任何地方</div>
+</div>
+
+<script>
+(function () {
+  var addr = document.getElementById('addr');
+  var statusEl = document.getElementById('status');
+  var btnGo = document.getElementById('btnGo');
+  var btnPaste = document.getElementById('btnPaste');
+  var ipPrefix = '';
+
+  function setStatus(msg, kind) {
+    statusEl.textContent = msg || '';
+    statusEl.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  /** 用户可能填 192.168.1.5 / http://... / 带路径，统一成 http://host:port */
+  function normalize(raw) {
+    var s = String(raw || '').trim();
+    if (!s) return '';
+    s = s.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/\s+/g, '');
+    if (!/:\d+$/.test(s)) s += ':8899';
+    return 'http://' + s;
+  }
+
+  function probe(base) {
+    return fetch(base + '/api/ping', { cache: 'no-store', mode: 'cors' })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); });
+  }
+
+  function connect() {
+    var base = normalize(addr.value);
+    if (!base) { setStatus('先填地址', 'bad'); addr.focus(); return; }
+    addr.value = base.replace(/^http:\/\//, '');
+    setStatus('正在连接…');
+    btnGo.disabled = true;
+
+    probe(base).then(function (j) {
+      if (!j || !j.ok) throw new Error('返回不正常');
+      setStatus('连上了 · v' + (j.version || '?') + '，正在打开…', 'ok');
+      if (window.MDNative) {
+        window.MDNative.saveServer(base);
+        setTimeout(function () { window.MDNative.openApp(); }, 420);
+      } else {
+        setStatus('连上了（浏览器预览模式，保存不了地址）', 'ok');
+      }
+    }).catch(function (e) {
+      setStatus('连不上：' + (e && e.message ? e.message : '检查地址和 Wi-Fi'), 'bad');
+      btnGo.disabled = false;
+    });
+  }
+
+  btnGo.addEventListener('click', connect);
+  addr.addEventListener('keydown', function (e) { if (e.key === 'Enter') connect(); });
+
+  btnPaste.addEventListener('click', function () {
+    var text = '';
+    try {
+      if (window.MDNative && window.MDNative.readClipboard) text = window.MDNative.readClipboard();
+    } catch (e) { /* ignore */ }
+    if (text) {
+      // 从「http://192.168.1.5:8899/m」这种整段里也能挑出地址
+      var m = String(text).match(/(\d{1,3}(?:\.\d{1,3}){3})(?::(\d{2,5}))?/);
+      addr.value = m ? (m[1] + (m[2] ? ':' + m[2] : '')) : text.trim();
+      setStatus('已粘贴', 'ok');
+      connect();
+      return;
+    }
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      navigator.clipboard.readText().then(function (t) {
+        addr.value = String(t || '').trim();
+        setStatus(t ? '已粘贴' : '剪贴板是空的', t ? 'ok' : 'bad');
+      }).catch(function () { setStatus('长按输入框手动粘贴', 'bad'); });
+    } else {
+      setStatus('长按输入框手动粘贴', 'bad');
+    }
+  });
+
+  // Java 侧在页面加载完后注入已有地址 + 本机网段
+  window.MDInit = function (saved, prefix) {
+    ipPrefix = prefix || '';
+    if (saved) {
+      addr.value = String(saved).replace(/^http:\/\//, '');
+      setStatus('上次连的是这个，点「连接」继续', 'ok');
+    } else if (ipPrefix) {
+      addr.placeholder = ipPrefix + '1:8899';
+    }
+    try {
+      if (window.MDNative && window.MDNative.version) {
+        document.getElementById('ver').textContent = 'v' + window.MDNative.version();
+      }
+    } catch (e) { /* ignore */ }
+  };
+})();
+</script>
+</body>
+</html>

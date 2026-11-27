@@ -1,0 +1,37 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.ixxgal.musicdesk'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.ixxgal.musicdesk"
+        minSdk 24
+        targetSdk 34
+        versionCode 6
+        versionName "1.1.6"
+    }
+
+    buildTypes {
+        debug {
+            // 用 Android 工具链自己的调试签名，装得上、能直接 sideload
+            signingConfig signingConfigs.debug
+        }
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}

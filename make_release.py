@@ -90,6 +90,18 @@ def build_exe() -> None:
     r = subprocess.run(cmd, cwd=str(ROOT))
     if r.returncode != 0:
         raise SystemExit(f"打包失败（exit {r.returncode}）")
+    copy_apk()
+
+
+def copy_apk() -> None:
+    """把构建好的手机 App 一起塞进 dist，用户下 zip 就有 APK 可传给手机。"""
+    src = ROOT / "android" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk"
+    if not src.is_file():
+        print("  （没有 Android App，跳过 —— 需要先 gradle assembleDebug）")
+        return
+    dst = DIST / "音乐下载台-手机.apk"
+    shutil.copy2(src, dst)
+    print(f"→ 手机 App 已附上：{dst.name}  {dst.stat().st_size / 1024:.1f} KB")
 
 
 def make_zip(version: str) -> Path:

@@ -2002,6 +2002,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # 手机 App 的引导页是 file:// origin（浏览器眼里是 "null"），
+        # 跨域探测 /api/ping 必须有这个头，否则被当成跨站请求拦掉。
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -2032,6 +2037,10 @@ class Handler(BaseHTTPRequestHandler):
             return v if isinstance(v, dict) else {}
         except Exception:
             return {}
+
+    # ---- OPTIONS（手机 App 引导页的跨域预检）
+    def do_OPTIONS(self):
+        self._send(204, b"", "text/plain; charset=utf-8")
 
     # ---- GET
     def do_GET(self):
