@@ -1,0 +1,634 @@
+/* 音乐下载台 · 手机版前端
+   只做四件事：贴链接下载 / 看任务 / 听曲库 / 翻记录 */
+'use strict';
+
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+
+const el = {
+  hdSub: $('#hdSub'),
+  btnRefresh: $('#btnRefresh'),
+  q: $('#q'),
+  src: $('#src'),
+  btnGo: $('#btnGo'),
+  btnPaste: $('#btnPaste'),
+  hint: $('#hint'),
+  results: $('#results'),
+  tasks: $('#tasks'),
+  taskCount: $('#taskCount'),
+  taskDot: $('#taskDot'),
+  library: $('#library'),
+  libCount: $('#libCount'),
+  libFilter: $('#libFilter'),
+  history: $('#history'),
+  histCount: $('#histCount'),
+  btnHistClear: $('#btnHistClear'),
+  player: $('#player'),
+  plTitle: $('#plTitle'),
+  plSub: $('#plSub'),
+  audio: $('#audio'),
+  video: $('#video'),
+  btnStop: $('#btnStop'),
+  tabbar: $('#tabbar'),
+  toast: $('#toast'),
+};
+
+const state = {
+  tab: 'dl',
+  jobs: [],
+  files: [],
+  hist: [],
+  playing: '',
+  playingName: '',
+  mode: 'idle',   // idle | searching | results
+};
+
+/* ---------------- 基础工具 ---------------- */
+async function api(path, opt = {}) {
+  const res = await fetch(path, {
+    headers: opt.body ? { 'Content-Type': 'application/json' } : undefined,
+    ...opt,
+  });
+  const txt = await res.text();
+  let data;
+  try { data = JSON.parse(txt); } catch { data = { ok: false, error: txt.slice(0, 160) }; }
+  if (!res.ok && data && !data.error) data.error = 'HTTP ' + res.status;
+  return data;
+}
+
+let toastTimer = 0;
+function toast(msg, kind = '') {
+  el.toast.textContent = msg;
+  el.toast.className = 'toast on' + (kind ? ' ' + kind : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.toast.className = 'toast' + (kind ? ' ' + kind : ''); }, 2600);
+}
+
+const esc = s => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+function fmtDur(sec) {
+  const s = Math.round(Number(sec) || 0);
+  if (!s) return '';
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return m + ':' + String(r).padStart(2, '0');
+}
+
+function human(n) {
+  const b = Number(n) || 0;
+  if (!b) return '';
+  if (b < 1024) return b + ' B';
+  if (b < 1024 * 1024) return (b / 1024).toFixed(0) + ' KB';
+  if (b < 1024 * 1024 * 1024) return (b / 1048576).toFixed(1) + ' MB';
+  return (b / 1073741824).toFixed(2) + ' GB';
+}
+
+function ago(ts) {
+  const t = Number(ts) || 0;
+  if (!t) return '';
+  const d = Math.max(0, Date.now() / 1000 - t);
+  if (d < 60) return '刚刚';
+  if (d < 3600) return Math.floor(d / 60) + ' 分钟前';
+  if (d < 86400) return Math.floor(d / 3600) + ' 小时前';
+  if (d < 86400 * 30) return Math.floor(d / 86400) + ' 天前';
+  const dt = new Date(t * 1000);
+  return (dt.getMonth() + 1) + '月' + dt.getDate() + '日';
+}
+
+function thumbUrl(u) {
+  if (!u) return '';
+  return '/api/thumb?u=' + encodeURIComponent(u);
+}
+
+/* 从一大段分享文案里把链接抠出来 */
+const URL_RE = /https?:\/\/[^\s"'<>|\\^`{}【】（）\[\]《》，。！？；：、]+/gi;
+function extractUrls(text) {
+  const hit = String(text || '').match(URL_RE) || [];
+  const clean = hit.map(u => u.replace(/[.,;:!?)\]}'"'、。，！？；：）】》]+$/, ''));
+  return Array.from(new Set(clean));
+}
+
+const PLAT_NAME = {
+  bilibili: 'B站', netease: '网易云', qq: 'QQ音乐', kugou: '酷狗',
+  ximalaya: '喜马拉雅', douyin: '抖音', kuaishou: '快手',
+  youtube: 'YouTube', direct: '直链', web: '网络',
+};
+
+/* ---------------- Tab ---------------- */
+function switchTab(name) {
+  state.tab = name;
+  $$('.panel').forEach(p => p.classList.toggle('hidden', p.dataset.panel !== name));
+  $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (name === 'task') { el.taskDot.classList.add('hidden'); loadJobs(); }
+  if (name === 'lib') loadFiles();
+  if (name === 'hist') loadHist();
+}
+
+el.tabbar.addEventListener('click', e => {
+  const btn = e.target.closest('.tab');
+  if (btn) switchTab(btn.dataset.tab);
+});
+
+/* ---------------- 提交 ---------------- */
+async function submit() {
+  const raw = el.q.value.trim();
+  if (!raw) { toast('先贴个链接或写个歌名', 'bad'); el.q.focus(); return; }
+
+  const urls = extractUrls(raw);
+  if (urls.length) {
+    el.q.value = '';
+    toast('已加入队列，开始下载');
+    await createJobs(urls.map(u => ({ source: u })));
+    switchTab('task');
+    return;
+  }
+  await search(raw);
+}
+
+async function createJobs(items) {
+  const r = await api('/api/jobs', { method: 'POST', body: JSON.stringify({ items }) });
+  if (!r.ok) { toast(r.error || '提交失败', 'bad'); return; }
+  await loadJobs();
+}
+
+async function search(q) {
+  el.btnGo.disabled = true;
+  el.btnGo.textContent = '搜索中';
+  el.results.innerHTML = '<div class="empty">正在搜…</div>';
+  el.hint.className = 'hint';
+  try {
+    const r = await api('/api/search?q=' + encodeURIComponent(q) + '&src=' + encodeURIComponent(el.src.value) + '&limit=24');
+    if (!r.ok) { el.results.innerHTML = '<div class="empty">' + esc(r.error || '搜索失败') + '</div>'; return; }
+    if (r.notice) {
+      el.results.innerHTML = '<div class="empty">' + esc(r.notice) + '</div>';
+      return;
+    }
+    const items = r.items || [];
+    if (!items.length) {
+      el.results.innerHTML = '<div class="empty">没搜到，换个关键词或换个源试试</div>';
+      return;
+    }
+    state.mode = 'results';
+    renderResults(items, r.src || el.src.value);
+  } catch (e) {
+    el.results.innerHTML = '<div class="empty">' + esc(e.message || '网络出错') + '</div>';
+  } finally {
+    el.btnGo.disabled = false;
+    el.btnGo.textContent = '开始';
+  }
+}
+
+function renderResults(items, src) {
+  const frag = document.createDocumentFragment();
+  items.forEach((it, i) => {
+    const row = document.createElement('div');
+    row.className = 'res';
+    const t = it.title || '(无标题)';
+    const sub = [];
+    if (it.artist) sub.push('<span>' + esc(it.artist) + '</span>');
+    if (it.duration) sub.push('<span>' + fmtDur(it.duration) + '</span>');
+    const plat = it.platform || (src === 'auto' ? '' : src);
+    if (plat && PLAT_NAME[plat]) sub.push('<span class="plat">' + esc(PLAT_NAME[plat]) + '</span>');
+    if (it.vip) sub.push('<span class="vip">VIP</span>');
+
+    row.innerHTML =
+      '<img class="thumb" loading="lazy" src="' + esc(thumbUrl(it.thumb) || '') + '" alt="">' +
+      '<div class="res-main">' +
+        '<div class="res-title">' + esc(t) + '</div>' +
+        '<div class="res-sub">' + sub.join('') + '</div>' +
+      '</div>' +
+      '<button class="res-go" aria-label="下载">' +
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5"/><path d="M5 19h14"/></svg>' +
+      '</button>';
+
+    row.querySelector('.thumb').addEventListener('error', e => { e.target.style.visibility = 'hidden'; });
+
+    row.querySelector('.res-go').addEventListener('click', async e => {
+      const btn = e.currentTarget;
+      if (btn.classList.contains('done')) return;
+      btn.disabled = true;
+      const payload = { source: it.source || it.url, title: it.title || '', artist: it.artist || '', platform: plat || '', engine: it.engine || '' };
+      if (it.duration) payload.duration = it.duration;
+      if (it.thumb) payload.thumb = it.thumb;
+      const r = await api('/api/jobs', { method: 'POST', body: JSON.stringify({ items: [payload] }) });
+      if (r.ok) {
+        btn.classList.add('done');
+        btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12.5l4.5 4.5L19 6.5"/></svg>';
+        toast('已加入下载队列');
+        loadJobs();
+      } else {
+        btn.disabled = false;
+        toast(r.error || '加入失败', 'bad');
+      }
+    });
+    frag.append(row);
+  });
+  el.results.innerHTML = '';
+  el.results.append(frag);
+}
+
+/* ---------------- 任务 ---------------- */
+const jobNodes = new Map();
+
+function jobName(j) {
+  if (j.status === 'done' && j.filename) return j.filename.replace(/\.[^.]+$/, '');
+  return j.title || j.filename || j.id;
+}
+
+function renderJobs() {
+  const list = state.jobs || [];
+  const live = list.filter(j => j.status === 'running' || j.status === 'queued');
+  const done = list.filter(j => j.status !== 'running' && j.status !== 'queued').slice(0, 24);
+  const show = live.concat(done);
+
+  el.taskCount.textContent = String(list.length);
+
+  if (!show.length) {
+    el.tasks.innerHTML = '<div class="empty">还没有任务<br>贴个链接或搜首歌试试</div>';
+    jobNodes.clear();
+    return;
+  }
+
+  if (el.tasks.querySelector('.empty')) el.tasks.innerHTML = '';
+
+  show.forEach(j => {
+    let node = jobNodes.get(j.id);
+    if (!node) {
+      node = document.createElement('div');
+      node.className = 'task';
+      node.dataset.id = j.id;
+      node.innerHTML =
+        '<div class="task-top">' +
+          '<div class="task-title"></div>' +
+          '<span class="task-pct"></span>' +
+        '</div>' +
+        '<div class="bar"><i></i></div>' +
+        '<div class="task-sub"></div>' +
+        '<div class="task-acts"></div>';
+      jobNodes.set(j.id, node);
+      el.tasks.append(node);
+    }
+    node.dataset.st = j.status === 'done' ? 'done' : (j.status === 'error' ? 'error' : 'run');
+    const pct = Math.max(0, Math.min(100, Math.round((j.progress || 0) * 100)));
+    node.querySelector('.task-title').textContent = jobName(j);
+    node.querySelector('.task-title').title = j.title || '';
+    node.querySelector('.task-pct').textContent =
+      j.status === 'done' ? '完成' : (j.status === 'error' ? '失败' : (j.status === 'queued' ? '排队' : pct + '%'));
+    node.querySelector('.bar i').style.width = (j.status === 'done' ? 100 : pct) + '%';
+
+    const sub = [];
+    const plat = PLAT_NAME[j.platform];
+    if (plat) sub.push('<span class="plat">' + esc(plat) + '</span>');
+    if (j.status === 'error' && j.error) {
+      sub.push('<span class="err">' + esc(String(j.error).slice(0, 90)) + '</span>');
+    } else {
+      if (j.stage) sub.push('<span>' + esc(j.stage) + '</span>');
+      if (j.status === 'running' && j.speed) sub.push('<span>' + esc(j.speed) + '</span>');
+      if (j.status === 'running' && j.eta) sub.push('<span>剩 ' + esc(String(j.eta)) + '</span>');
+      if (j.status === 'done') {
+        if (j.duration) sub.push('<span>' + fmtDur(j.duration) + '</span>');
+        if (j.out_size) sub.push('<span>' + human(j.out_size) + '</span>');
+      }
+    }
+    node.querySelector('.task-sub').innerHTML = sub.join('');
+
+    const acts = node.querySelector('.task-acts');
+    acts.innerHTML = '';
+    if (j.status === 'done' && j.filename) {
+      const b = document.createElement('button');
+      b.className = 'btn tiny ghost';
+      b.textContent = '播放';
+      b.onclick = () => playFile(j.filename, jobName(j), j.artist || '');
+      acts.append(b);
+    }
+    if (j.status === 'error' || j.status === 'done') {
+      const b = document.createElement('button');
+      b.className = 'btn tiny ghost';
+      b.textContent = '移除';
+      b.onclick = async () => {
+        await api('/api/jobs/' + encodeURIComponent(j.id), { method: 'DELETE' });
+        jobNodes.delete(j.id);
+        node.remove();
+        loadJobs();
+      };
+      acts.append(b);
+    }
+    if (j.status === 'running' || j.status === 'queued') {
+      const b = document.createElement('button');
+      b.className = 'btn tiny ghost';
+      b.textContent = '取消';
+      b.onclick = async () => {
+        await api('/api/jobs/' + encodeURIComponent(j.id) + '/cancel', { method: 'POST' });
+        loadJobs();
+      };
+      acts.append(b);
+    }
+  });
+
+  // 清掉已不在列表里的节点
+  const alive = new Set(show.map(j => j.id));
+  jobNodes.forEach((n, id) => {
+    if (!alive.has(id)) { n.remove(); jobNodes.delete(id); }
+  });
+
+  // 有在跑的任务，tab 上点个小灯
+  if (live.length && state.tab !== 'task') el.taskDot.classList.remove('hidden');
+}
+
+async function loadJobs() {
+  const r = await api('/api/jobs');
+  if (!r.ok) return;
+  state.jobs = (r.jobs || r.items || []).slice();
+  renderJobs();
+}
+
+/* ---------------- 曲库 ---------------- */
+function isVideo(f) {
+  return f.kind === 'video' || /\.(mp4|m4v|mov|webm|mkv)$/i.test(f.name || '');
+}
+
+function renderFiles() {
+  const kw = el.libFilter.value.trim().toLowerCase();
+  const files = (state.files || []).filter(f => !kw || (f.name || '').toLowerCase().includes(kw));
+  el.libCount.textContent = String((state.files || []).length);
+
+  if (!files.length) {
+    el.library.innerHTML = '<div class="empty">' + ((state.files || []).length ? '没有匹配的文件' : '曲库还是空的<br>下载完成的文件会出现在这里') + '</div>';
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+  files.forEach(f => {
+    const vid = isVideo(f);
+    const meta = [
+      vid ? '视频' : '音频',
+      f.duration ? fmtDur(f.duration) : '',
+      vid && f.width ? f.width + '×' + f.height : '',
+      f.bitrate ? f.bitrate + 'kbps' : '',
+      human(f.size),
+    ].filter(Boolean).join(' · ');
+
+    const row = document.createElement('div');
+    row.className = 'track' + (state.playingName === f.name ? ' playing' : '');
+    row.innerHTML =
+      '<button class="tk-play" aria-label="播放">' +
+        (state.playingName === f.name
+          ? '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>'
+          : '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5l11 7-11 7z"/></svg>') +
+      '</button>' +
+      '<div class="tk-main">' +
+        '<div class="tk-name">' + esc((f.name || '').replace(/\.[^.]+$/, '')) + '</div>' +
+        '<div class="tk-meta">' + esc(meta) + '</div>' +
+      '</div>' +
+      '<button class="tk-del" aria-label="删除">' +
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h16M9 7V4.8h6V7M6.5 7l.9 13.2h9.2L17.5 7"/></svg>' +
+      '</button>';
+
+    row.querySelector('.tk-play').onclick = () => {
+      if (state.playingName === f.name) stopPlay();
+      else playFile(f.name, (f.name || '').replace(/\.[^.]+$/, ''), '');
+    };
+
+    row.querySelector('.tk-del').onclick = async () => {
+      if (!confirm('删除「' + (f.name || '') + '」？')) return;
+      const r = await api('/api/files?name=' + encodeURIComponent(f.name), { method: 'DELETE' });
+      if (r.ok) {
+        if (state.playingName === f.name) stopPlay();
+        toast('已删除');
+        loadFiles();
+      } else {
+        toast(r.error || '删除失败', 'bad');
+      }
+    };
+
+    frag.append(row);
+  });
+
+  el.library.innerHTML = '';
+  el.library.append(frag);
+}
+
+async function loadFiles() {
+  const r = await api('/api/files');
+  if (!r.ok) return;
+  state.files = r.files || [];
+  renderFiles();
+}
+
+/* ---------------- 记录 ---------------- */
+function renderHist() {
+  const list = state.hist || [];
+  el.histCount.textContent = String(list.length);
+  if (!list.length) {
+    el.history.innerHTML = '<div class="empty">下载成功或失败的任务会记在这里</div>';
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+  list.forEach(h => {
+    const ok = h.status === 'done';
+    const row = document.createElement('div');
+    row.className = 'hist';
+    const sub = [];
+    if (h.platform && PLAT_NAME[h.platform]) sub.push(PLAT_NAME[h.platform]);
+    if (ok) {
+      if (h.duration) sub.push(fmtDur(h.duration));
+      if (h.size) sub.push(human(h.size));
+    } else if (h.error) {
+      sub.push(String(h.error).slice(0, 60));
+    }
+    row.innerHTML =
+      '<div class="hist-ico' + (ok ? '' : ' bad') + '">' +
+        (ok
+          ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M5 12.5l4.5 4.5L19 6.5"/></svg>'
+          : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>') +
+      '</div>' +
+      '<div class="hist-main">' +
+        '<div class="hist-title">' + esc(h.title || h.filename || h.id) + '</div>' +
+        '<div class="hist-sub">' + esc(sub.join(' · ')) + '</div>' +
+      '</div>' +
+      '<div class="hist-time">' + esc(ago(h.finished)) + '</div>';
+    frag.append(row);
+  });
+
+  el.history.innerHTML = '';
+  el.history.append(frag);
+}
+
+async function loadHist() {
+  const r = await api('/api/history?limit=120');
+  if (!r.ok) return;
+  state.hist = r.items || [];
+  renderHist();
+}
+
+/* ---------------- 播放 ---------------- */
+function playFile(name, title, artist) {
+  const vid = /\.(mp4|m4v|mov|webm|mkv)$/i.test(name || '');
+  state.playing = name;
+  state.playingName = name;
+
+  el.plTitle.textContent = title || name;
+  el.plSub.textContent = artist || (vid ? '视频' : '音频');
+  el.player.classList.remove('hidden');
+
+  const url = '/media/' + encodeURIComponent(name);
+  if (vid) {
+    el.audio.pause();
+    el.audio.classList.add('hidden');
+    el.video.classList.remove('hidden');
+    el.video.src = url;
+    el.video.play().catch(() => {});
+  } else {
+    el.video.pause();
+    el.video.removeAttribute('src');
+    el.video.classList.add('hidden');
+    el.audio.classList.remove('hidden');
+    el.audio.src = url;
+    el.audio.play().catch(() => {});
+  }
+  renderFiles();
+}
+
+function stopPlay() {
+  try { el.audio.pause(); } catch {}
+  try { el.video.pause(); } catch {}
+  el.audio.removeAttribute('src');
+  el.video.removeAttribute('src');
+  el.audio.classList.add('hidden');
+  el.video.classList.add('hidden');
+  state.playing = '';
+  state.playingName = '';
+  el.player.classList.add('hidden');
+  renderFiles();
+}
+
+el.btnStop.onclick = stopPlay;
+
+[el.audio, el.video].forEach(node => {
+  node.addEventListener('ended', () => {
+    // 播完自动下一首
+    const files = (state.files || []).filter(f => !isVideo(f));
+    const i = files.findIndex(f => f.name === state.playingName);
+    if (i >= 0 && i + 1 < files.length) {
+      const nx = files[i + 1];
+      playFile(nx.name, (nx.name || '').replace(/\.[^.]+$/, ''), '');
+    } else {
+      stopPlay();
+    }
+  });
+});
+
+/* ---------------- 轮询 ---------------- */
+let pollTimer = 0;
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  const gap = state.tab === 'task' ? 1200 : 3000;
+  pollTimer = setTimeout(async () => {
+    try {
+      if (state.tab === 'task') await loadJobs();
+      else if (state.tab === 'lib') await loadFiles();
+      else {
+        // 后台也刷新任务，用来点亮小灯
+        const r = await api('/api/jobs');
+        if (r.ok) { state.jobs = (r.jobs || r.items || []); renderJobs(); }
+      }
+    } catch {}
+    schedulePoll();
+  }, gap);
+}
+
+/* ---------------- 绑定 ---------------- */
+el.btnGo.onclick = submit;
+
+el.q.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); }
+});
+
+el.btnPaste.onclick = async () => {
+  try {
+    const txt = await navigator.clipboard.readText();
+    if (!txt) { toast('剪贴板是空的', 'bad'); return; }
+    el.q.value = txt.trim();
+    el.q.focus();
+    toast('已粘贴');
+    if (extractUrls(txt).length) submit();
+  } catch {
+    el.q.focus();
+    toast('这个环境读不了剪贴板，长按输入框粘贴就行');
+  }
+};
+
+el.btnRefresh.onclick = async () => {
+  el.btnRefresh.classList.add('spin');
+  try {
+    await ping();
+    if (state.tab === 'task') await loadJobs();
+    if (state.tab === 'lib') await loadFiles();
+    if (state.tab === 'hist') await loadHist();
+    toast('已刷新');
+  } finally {
+    el.btnRefresh.classList.remove('spin');
+  }
+};
+
+el.libFilter.addEventListener('input', renderFiles);
+
+document.getElementById('chips').addEventListener('click', e => {
+  const c = e.target.closest('.chip');
+  if (!c) return;
+  el.q.value = c.dataset.q || c.textContent;
+  submit();
+});
+
+el.btnHistClear.onclick = async () => {
+  if (!confirm('清空全部下载记录？（不影响磁盘上的文件）')) return;
+  await api('/api/history', { method: 'DELETE' });
+  await loadHist();
+  toast('记录已清空');
+};
+
+/* 粘贴整段分享文案到输入框，自动识别链接就开始下 */
+el.q.addEventListener('paste', e => {
+  const txt = (e.clipboardData || window.clipboardData)?.getData('text') || '';
+  if (extractUrls(txt).length) {
+    setTimeout(() => {
+      el.q.value = txt.trim();
+      submit();
+    }, 60);
+  }
+});
+
+/* ---------------- 启动 ---------------- */
+async function ping() {
+  try {
+    const r = await api('/api/ping');
+    if (r.ok) {
+      el.hdSub.textContent = '已连接 · v' + (r.version || '?');
+      return true;
+    }
+    el.hdSub.textContent = '服务异常';
+  } catch {
+    el.hdSub.textContent = '连接不上服务';
+  }
+  return false;
+}
+
+(async function boot() {
+  await ping();
+  await loadJobs();
+  await loadHist();
+  await loadFiles();
+  const qs = new URLSearchParams(location.search);
+  if (qs.get('q')) {
+    el.q.value = qs.get('q');
+    switchTab('dl');
+    submit();
+  } else if (qs.get('tab')) {
+    switchTab(qs.get('tab'));
+  }
+  schedulePoll();
+})();

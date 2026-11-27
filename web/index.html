@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>音乐下载台 · Music Desk</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎧</text></svg>">
+</head>
+<body>
+
+<div class="aurora"></div>
+<div class="grain"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <path d="M9 18V5l10-2v13"/>
+        <circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/>
+      </svg>
+    </div>
+    <div class="brand-text">
+      <h1>音乐下载台</h1>
+      <span>贴链接 · 说歌名 → 自动抓成 MP3 / MP4</span>
+    </div>
+  </div>
+  <div class="top-actions">
+    <div class="status" id="status"><i></i><span>连接中</span></div>
+    <button class="ghost" id="btnFolder" title="打开下载目录">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>
+      目录
+    </button>
+    <button class="ghost" id="btnSettings" title="设置">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.6 1.6 0 00-1.8-.3 1.6 1.6 0 00-1 1.5V21a2 2 0 11-4 0v-.1A1.6 1.6 0 008 19.4a1.6 1.6 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.6 1.6 0 00.3-1.8 1.6 1.6 0 00-1.5-1H2a2 2 0 110-4h.1A1.6 1.6 0 004.6 8a1.6 1.6 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1A1.6 1.6 0 009 3.6 1.6 1.6 0 0010 2.1V2a2 2 0 114 0v.1A1.6 1.6 0 0016 3.6a1.6 1.6 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1A1.6 1.6 0 0020.4 8v.1A1.6 1.6 0 0021.9 10H22a2 2 0 110 4h-.1a1.6 1.6 0 00-1.5 1z"/></svg>
+      设置
+    </button>
+  </div>
+</header>
+
+<!-- 新版本提示条 -->
+<div class="update-bar hidden" id="updateBar">
+  <div class="ub-ico">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 3v12M7 11l5 5 5-5"/><path d="M4 19h16"/></svg>
+  </div>
+  <div class="ub-main">
+    <div class="ub-title">发现新版本 <b id="ubVer">—</b></div>
+    <div class="ub-notes" id="ubNotes"></div>
+  </div>
+  <div class="ub-acts">
+    <button class="primary mini" id="btnUpdateNow">立即更新</button>
+    <button class="ghost mini" id="btnUpdateLater">稍后</button>
+  </div>
+</div>
+
+<main>
+  <!-- 输入区 -->
+  <section class="hero">
+    <div class="input-card" id="dropZone">
+      <textarea id="input" rows="2" spellcheck="false"
+        placeholder="粘贴链接（B站 / 网易云 / QQ音乐 / 酷狗 / 喜马拉雅 / 抖音 / 快手 / YouTube / 直链），或输入「歌手 歌名」；多行链接可批量入队，也能把本地音视频拖进来。"></textarea>
+      <div class="input-bar">
+        <label class="src-pick" title="贴链接时不用管这里，会自动识别平台">
+          <span class="src-name">搜索源</span>
+          <select id="selSrc">
+            <option value="auto" selected>自动 · 全部源</option>
+            <option value="bilibili">B站</option>
+            <option value="netease">网易云</option>
+            <option value="ximalaya">喜马拉雅</option>
+            <option value="qq">QQ音乐</option>
+            <option value="kugou">酷狗</option>
+              <option value="douyin">抖音</option>
+              <option value="kuaishou">快手</option>
+            <option value="web">网络源</option>
+          </select>
+        </label>
+        <span class="hint" id="inputHint">Ctrl + Enter 提交</span>
+        <button class="primary" id="btnGo">
+          <span class="btn-label">解析</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="chips" id="chips">
+      <span class="chip-label">试试</span>
+      <button class="chip" data-q="周杰伦 晴天">周杰伦 晴天</button>
+      <button class="chip" data-q="Lofi chill beat">Lofi chill</button>
+      <button class="chip" data-q="久石让 Summer">久石让 Summer</button>
+      <button class="chip" data-q="The Weeknd Blinding Lights">Blinding Lights</button>
+    </div>
+  </section>
+
+  <!-- 解析结果 / 搜索结果 -->
+  <section class="panel hidden" id="resultsPanel">
+    <div class="panel-head">
+      <h2 id="resultsTitle">搜索结果</h2>
+      <div class="panel-tools">
+        <span class="count" id="resultsCount"></span>
+        <button class="icon-btn" id="btnCloseResults" title="关闭">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="results" id="results"></div>
+  </section>
+
+  <!-- 下载任务 -->
+  <section class="panel" id="tasksPanel">
+    <div class="panel-head">
+      <h2>下载任务 <span class="badge" id="taskBadge">0</span></h2>
+      <div class="panel-tools">
+        <label class="mini-check" title="勾上后，任务一完成就从列表里消失（记录还在下方「下载记录」里）">
+          <input type="checkbox" id="chkAutohide">
+          <span>完成后自动隐藏</span>
+        </label>
+        <button class="icon-btn" id="btnTaskRefresh" title="刷新">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>
+        </button>
+        <button class="icon-btn" id="btnClearDone" title="清除已完成">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="tasks" id="tasks">
+      <div class="empty">还没有任务，上面粘个链接试试</div>
+    </div>
+  </section>
+
+  <!-- 本地曲库 -->
+  <section class="panel" id="libraryPanel">
+    <div class="panel-head">
+      <h2>本地曲库 <span class="badge" id="libBadge">0</span></h2>
+      <div class="panel-tools">
+        <span class="count" id="libSize"></span>
+        <button class="icon-btn" id="btnLibRefresh" title="刷新列表">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>
+        </button>
+        <div class="search-mini">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+          <input id="libSearch" placeholder="筛选">
+        </div>
+      </div>
+    </div>
+
+    <!-- 多选工具条 -->
+    <div class="lib-tools" id="libTools">
+      <label class="sel-all" id="libSelAllWrap">
+        <input type="checkbox" id="libSelAll">
+        <span>全选</span>
+      </label>
+      <span class="sel-count" id="libSelCount">未选择</span>
+      <div class="lib-bulk hidden" id="libBulk">
+        <button class="ghost mini" id="btnBulkDl">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12M7 11l5 5 5-5M5 21h14"/></svg>
+          下载所选
+        </button>
+        <button class="ghost mini danger" id="btnBulkDel">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+          删除所选
+        </button>
+        <button class="ghost mini" id="btnBulkClear">取消选择</button>
+      </div>
+    </div>
+
+    <div class="library" id="library">
+      <div class="empty">下载完成的文件会出现在这里</div>
+    </div>
+  </section>
+
+  <!-- 下载记录 -->
+  <section class="panel" id="historyPanel">
+    <div class="panel-head">
+      <h2>下载记录 <span class="badge" id="historyBadge">0</span></h2>
+      <div class="panel-tools">
+        <span class="count" id="historyHint"></span>
+        <button class="icon-btn" id="btnHistRefresh" title="刷新记录">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>
+        </button>
+        <button class="icon-btn" id="btnHistClear" title="清空记录">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="history" id="history">
+      <div class="empty">下载完成或失败的任务会记在这里</div>
+    </div>
+  </section>
+</main>
+
+<!-- 播放条 -->
+<div class="player hidden" id="player">
+  <div class="player-art" id="playerArt">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 18V5l10-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg>
+  </div>
+  <div class="player-meta">
+    <div class="player-title" id="playerTitle">未播放</div>
+    <div class="player-sub" id="playerSub"></div>
+  </div>
+  <audio id="audio" controls preload="metadata"></audio>
+  <video id="videoView" class="video-view hidden" controls playsinline></video>
+  <button class="icon-btn" id="btnClosePlayer" title="关闭">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+  </button>
+</div>
+
+<!-- 设置弹窗 -->
+<div class="modal hidden" id="settingsModal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3>设置</h3>
+      <button class="icon-btn" id="btnCloseSettings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <label class="field">
+        <span>下载目录</span>
+        <div class="path-row">
+          <input type="text" id="setDir" placeholder="留空 = 程序目录下的 downloads">
+          <button class="ghost mini" id="btnPickDir">浏览</button>
+        </div>
+      </label>
+      <label class="field switch-field">
+        <span>换目录时把已有文件一起搬过去</span>
+        <input type="checkbox" id="setMoveOld" class="switch">
+      </label>
+      <label class="field">
+        <span>已完成任务保留天数（0 = 永不删除）</span>
+        <input type="number" id="setPurge" min="0" max="365" step="1" value="3">
+      </label>
+      <label class="field">
+        <span>MP3 码率</span>
+        <select id="setQuality">
+          <option value="128">128 kbps</option>
+          <option value="192">192 kbps</option>
+          <option value="256">256 kbps</option>
+          <option value="320">320 kbps</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>并行任务数</span>
+        <input type="number" id="setConcurrency" min="1" max="6" step="1">
+      </label>
+      <label class="field switch-field">
+        <span>写入 ID3 标签</span>
+        <input type="checkbox" id="setTags" class="switch">
+      </label>
+      <label class="field switch-field">
+        <span>嵌入专辑封面</span>
+        <input type="checkbox" id="setCover" class="switch">
+      </label>
+      <label class="field">
+        <span>代理（可选）</span>
+        <input type="text" id="setProxy" placeholder="http://127.0.0.1:7890">
+      </label>
+      <label class="field">
+        <span>浏览器 Cookie（可选）</span>
+        <select id="setCookies">
+          <option value="">不使用</option>
+          <option value="chrome">Chrome</option>
+          <option value="edge">Edge</option>
+          <option value="firefox">Firefox</option>
+          <option value="brave">Brave</option>
+        </select>
+      </label>
+      <div class="field static">
+        <span>ffmpeg</span>
+        <code id="setFfmpeg">—</code>
+      </div>
+
+      <div class="field-group-title">更新</div>
+      <label class="field">
+        <span>更新源</span>
+        <input type="text" id="setUpdateSrc" placeholder="留空 = 自动找 OneDrive 里的 release 目录">
+      </label>
+      <div class="field static">
+        <span>当前版本</span>
+        <code id="setVersion">—</code>
+      </div>
+      <div class="field static">
+        <span>检查更新</span>
+        <button class="ghost mini" id="btnCheckUpdate">立即检查</button>
+        <span class="upd-state" id="updState"></span>
+      </div>
+
+      <div class="field-group-title">手机访问</div>
+      <label class="field">
+        <span>允许同一 Wi-Fi 下的手机访问</span>
+        <input type="checkbox" id="setAllowLan" class="switch">
+      </label>
+      <div class="lan-box" id="lanBox">
+        <div class="lan-qr"><img id="lanQr" alt="手机访问二维码"></div>
+        <div class="lan-info">
+          <div class="lan-url" id="lanUrl">—</div>
+          <div class="lan-tip" id="lanTip">同一个 Wi-Fi 下，手机扫这个码就能用。</div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="ghost" id="btnCancelSettings">取消</button>
+      <button class="primary" id="btnSaveSettings">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

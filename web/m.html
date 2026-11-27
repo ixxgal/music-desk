@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<meta name="theme-color" content="#070a10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="音乐下载台">
+<title>音乐下载台 · 手机版</title>
+<link rel="stylesheet" href="/static/m.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎧</text></svg>">
+</head>
+<body>
+
+<header class="hd">
+  <div class="hd-l">
+    <div class="logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+        <path d="M9 18V5l10-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/>
+      </svg>
+    </div>
+    <div class="hd-t">
+      <h1>音乐下载台</h1>
+      <p id="hdSub">连接中…</p>
+    </div>
+  </div>
+  <button class="icon-btn" id="btnRefresh" aria-label="刷新">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M20 11a8 8 0 10-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
+  </button>
+</header>
+
+<main class="main" id="main">
+
+  <!-- 下载 -->
+  <section class="panel" data-panel="dl">
+    <div class="card">
+      <textarea id="q" rows="2" placeholder="粘贴链接（B站 / 网易云 / QQ音乐 / 抖音 / 快手…），或输入「歌手 歌名」"></textarea>
+      <div class="row">
+        <select id="src">
+          <option value="auto" selected>自动 · 全部源</option>
+          <option value="bilibili">B站</option>
+          <option value="netease">网易云</option>
+          <option value="ximalaya">喜马拉雅</option>
+          <option value="qq">QQ音乐</option>
+          <option value="kugou">酷狗</option>
+          <option value="web">网络源</option>
+        </select>
+        <button class="btn primary" id="btnGo">开始</button>
+      </div>
+      <button class="btn ghost wide" id="btnPaste">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="8" y="3" width="8" height="4" rx="1.2"/><path d="M16 5h2a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V7a2 2 0 012-2h2"/></svg>
+        从剪贴板粘贴
+      </button>
+    </div>
+    <div class="chips" id="chips">
+      <button class="chip" data-q="周杰伦 晴天">周杰伦 晴天</button>
+      <button class="chip" data-q="薛之谦 小尖尖">薛之谦 小尖尖</button>
+      <button class="chip" data-q="Lofi chill beat">Lofi chill</button>
+      <button class="chip" data-q="助眠 白噪音">助眠白噪音</button>
+      <button class="chip" data-q="钢琴 纯音乐">钢琴纯音乐</button>
+    </div>
+    <div class="hint" id="hint"></div>
+    <div class="list" id="results"></div>
+  </section>
+
+  <!-- 任务 -->
+  <section class="panel hidden" data-panel="task">
+    <div class="sec-hd">
+      <h2>下载任务 <span class="badge" id="taskCount">0</span></h2>
+    </div>
+    <div class="list" id="tasks"></div>
+  </section>
+
+  <!-- 曲库 -->
+  <section class="panel hidden" data-panel="lib">
+    <div class="sec-hd">
+      <h2>曲库 <span class="badge" id="libCount">0</span></h2>
+      <input class="filter" id="libFilter" placeholder="筛选">
+    </div>
+    <div class="list" id="library"></div>
+  </section>
+
+  <!-- 记录 -->
+  <section class="panel hidden" data-panel="hist">
+    <div class="sec-hd">
+      <h2>下载记录 <span class="badge" id="histCount">0</span></h2>
+      <button class="btn tiny ghost" id="btnHistClear">清空</button>
+    </div>
+    <div class="list" id="history"></div>
+  </section>
+
+</main>
+
+<!-- 播放器 -->
+<div class="player hidden" id="player">
+  <div class="pl-main">
+    <div class="pl-title" id="plTitle">—</div>
+    <div class="pl-sub" id="plSub"></div>
+  </div>
+  <audio id="audio" controls preload="none"></audio>
+  <video id="video" controls playsinline preload="none" class="hidden"></video>
+  <button class="icon-btn" id="btnStop" aria-label="关闭">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+  </button>
+</div>
+
+<nav class="tabbar" id="tabbar">
+  <button class="tab active" data-tab="dl">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v11M8 11l4 4 4-4"/><path d="M4 19h16"/></svg>
+    <span>下载</span>
+  </button>
+  <button class="tab" data-tab="task">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h10M4 12h16M4 18h7"/></svg>
+    <span>任务</span>
+    <i class="tab-dot hidden" id="taskDot"></i>
+  </button>
+  <button class="tab" data-tab="lib">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 18V6l10-2v12"/><circle cx="6" cy="18" r="2.6"/><circle cx="16" cy="16" r="2.6"/></svg>
+    <span>曲库</span>
+  </button>
+  <button class="tab" data-tab="hist">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="8.4"/><path d="M12 7.6V12l3 1.8"/></svg>
+    <span>记录</span>
+  </button>
+</nav>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/m.js"></script>
+</body>
+</html>

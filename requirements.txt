@@ -1,0 +1,21 @@
+# 依赖（Python 3.9+）
+# 安装：python -m pip install -r requirements.txt
+
+# 下载引擎
+yt-dlp>=2024.1.0          # B站 / YouTube / 通用站点
+mutagen>=1.47             # ID3 标签读写、mp4 元数据（不启进程）
+
+# 转码：自带的 ffmpeg 二进制，不用系统装 ffmpeg
+imageio-ffmpeg>=0.5.0
+
+# 桌面外壳（只有 desktop.py 需要；纯网页版可省）
+pywebview>=5.0
+
+# 二维码（手机访问）
+qrcode>=7.4
+
+# 抖音/快手解析：用 CDP 直连浏览器内核
+websocket-client>=1.6
+
+# 打包
+pyinstaller>=6.0
