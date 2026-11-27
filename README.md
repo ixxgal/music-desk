@@ -153,6 +153,30 @@ QQ 音乐 / 酷狗这类版权平台只提供元数据，真正下载时会去 B
 
 ---
 
+## 从源码跑起来
+
+不想用打包好的 exe，想自己改代码：
+
+```bash
+git clone https://github.com/ixxgal/music-desk.git
+cd music-desk
+python -m pip install -r requirements.txt
+
+# 起后端 + 网页（浏览器开 http://127.0.0.1:8899/）
+python server.py --port 8899
+
+# 或者起桌面窗口
+python desktop.py
+```
+
+第一次跑 `server.py` 会自动在程序目录下建 `data/`（配置、任务记录、下载记录）和 `downloads/`（产出）。
+
+**ffmpeg 不用自己装** —— `imageio-ffmpeg` 里带着一个带 libmp3lame 的二进制，`server.py` 启动时自己找。
+
+**手机端**要监听 `0.0.0.0`：设置里勾「允许同一 Wi-Fi 下的手机访问」，或者 `python server.py --port 8899 --host 0.0.0.0`。
+
+---
+
 ## 命令行工具
 
 | 脚本 | 用途 |
@@ -166,6 +190,7 @@ QQ 音乐 / 酷狗这类版权平台只提供元数据，真正下载时会去 B
 | `make_icon.py` / `make_splash.py` | 重新生成图标 / 闪屏 |
 | `updater.py` | 自动更新的核心逻辑；直接 `python updater.py` 可打印当前检查结果 |
 | `make_release.py` | 发新版：打包 → 压 zip → 写 `release/version.json` |
+| `sync_github.py` | 把工作区同步到 GitHub（走 Git Data API，只传内容变了的文件） |
 
 ---
 
