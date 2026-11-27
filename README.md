@@ -2,8 +2,19 @@
 
 贴一个链接，或者说一句歌名，自动抓成 **MP3 / MP4**。
 
+Windows 桌面软件 + 手机网页版。B站 / 网易云 / QQ音乐 / 酷狗 / 喜马拉雅 / 抖音 / 快手 / YouTube。
+
+![桌面主界面](docs/screenshots/desktop-main.png)
+
+<p>
+<img src="docs/screenshots/mobile-download.png" width="220" alt="手机-下载">
+<img src="docs/screenshots/mobile-tasks.png" width="220" alt="手机-任务">
+<img src="docs/screenshots/mobile-library.png" width="220" alt="手机-曲库">
+</p>
+
 - **桌面软件版**：双击桌面的「音乐下载台」图标（已装到 `%LOCALAPPDATA%\MusicDesk`）
 - **网页开发版**：`python server.py --port 8899`，浏览器开 http://127.0.0.1:8899/
+- **手机版**：设置里勾「允许同一 Wi-Fi 下的手机访问」，重启后扫码打开（见 [手机端](#手机端)）
 
 ---
 
