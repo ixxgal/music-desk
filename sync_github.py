@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import subprocess
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -98,9 +99,16 @@ def main():
                    {"tree": entries, "base_tree": base_tree} if base_tree
                    else {"tree": entries})
 
-    msg = subprocess.run(["git", "log", "-1", "--pretty=%B"],
-                         capture_output=True, text=True, encoding="utf-8",
-                         errors="replace", cwd=ROOT).stdout.strip() or "update"
+    # 命令行 --msg / -m 优先，其次本地最后一次 commit，最后兜底
+    msg = ""
+    argv = sys.argv[1:]
+    for i, a in enumerate(argv):
+        if a in ("--msg", "-m") and i + 1 < len(argv):
+            msg = argv[i + 1].strip()
+    if not msg:
+        msg = subprocess.run(["git", "log", "-1", "--pretty=%B"],
+                             capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", cwd=ROOT).stdout.strip() or "update"
     payload = {"message": msg, "tree": new_tree["sha"]}
     if head_sha:
         payload["parents"] = [head_sha]
