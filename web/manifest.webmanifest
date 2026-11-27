@@ -1,0 +1,21 @@
+{
+  "name": "音乐下载台",
+  "short_name": "下载台",
+  "description": "贴链接 / 说歌名 → 自动抓成 MP3·MP4",
+  "start_url": "/m",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#070a10",
+  "theme_color": "#070a10",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "下载", "url": "/m?tab=dl" },
+    { "name": "曲库", "url": "/m?tab=lib" }
+  ]
+}
