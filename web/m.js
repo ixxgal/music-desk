@@ -631,4 +631,9 @@ async function ping() {
     switchTab(qs.get('tab'));
   }
   schedulePoll();
+
+  // PWA：注册 service worker，让「添加到主屏幕」后能全屏打开、断网也认得壳
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
 })();

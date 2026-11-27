@@ -2042,6 +2042,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.serve_web("index.html")
             if path in ("/m", "/m/", "/m.html"):
                 return self.serve_web("m.html")
+            if path in ("/manifest.webmanifest", "/sw.js"):
+                return self.serve_web(path.lstrip("/"))
             if path.startswith("/static/"):
                 return self.serve_web(path[len("/static/"):])
             if path == "/api/ping":
@@ -2317,6 +2319,8 @@ class Handler(BaseHTTPRequestHandler):
             ctype = "text/css; charset=utf-8"
         elif p.suffix in (".html",):
             ctype = "text/html; charset=utf-8"
+        elif p.suffix == ".webmanifest":
+            ctype = "application/manifest+json; charset=utf-8"
         self._send(200, p.read_bytes(), ctype)
 
     # ---- 音频（Range）
