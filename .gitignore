@@ -1,0 +1,23 @@
+# 运行产物
+data/
+downloads/
+dist/
+build/
+release/
+__pycache__/
+*.pyc
+*.log
+
+# 打包中间件
+MusicDesk.spec.bak
+
+# 临时脚本
+_*.py
+!__init__.py
+patch_*.py
+probe_*.py
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
