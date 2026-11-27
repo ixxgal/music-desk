@@ -1,5 +1,6 @@
 plugins {
     id 'com.android.application'
+    id 'com.chaquo.python'
 }
 
 android {
@@ -10,8 +11,14 @@ android {
         applicationId "com.ixxgal.musicdesk"
         minSdk 24
         targetSdk 34
-        versionCode 6
-        versionName "1.1.6"
+        versionCode 7
+        versionName "1.2.0"
+
+        // Chaquopy 要求显式声明 ABI。只留 arm64：现在手机基本都是这个，
+        // 而且 Python 运行时每多一个 ABI 就多十几 MB。
+        ndk {
+            abiFilters "arm64-v8a"
+        }
     }
 
     buildTypes {
@@ -33,5 +40,19 @@ android {
     lint {
         abortOnError false
         checkReleaseBuilds false
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        // 本机 build 用的 Python 是 3.12，两边要一致
+        version = "3.12"
+        buildPython "C:/Users/xxgA/AppData/Local/Programs/Python/Python312/python.exe"
+        pyc {
+            src = false  // 源码直接进 APK，方便线上排查
+        }
+    }
+    // 先只装纯 Python、无 C 扩展的包，验证链路能不能通
+    productFlavors {
     }
 }

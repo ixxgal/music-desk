@@ -26,23 +26,31 @@ import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.Toast;
 
+import com.chaquo.python.Python;
+import com.chaquo.python.android.AndroidPlatform;
+
 /**
  * 音乐下载台 · 手机端壳。
  *
- * 它本身不做任何下载 —— 后端跑在电脑上，这里只是一个全屏 WebView，
- * 记住电脑地址后直接打开那个网页，看起来和原生 App 一样。
+ * 两种跑法：
+ *   本机模式 —— 手机里内置了 CPython（Chaquopy），后端就在手机上跑，WebView 指向 127.0.0.1。
+ *              不依赖电脑，飞机上也能用。
+ *   遥控模式 —— 后端跑在电脑上，这里只当遥控器（要同一个 Wi-Fi）。
  *
- * 地址来源：首次启动的引导页（assets/setup.html）里填，存 SharedPreferences。
+ * 模式来源：首次启动的引导页（assets/setup.html）里选，存 SharedPreferences。
  */
 public class MainActivity extends Activity {
 
     private static final String PREF = "musicdesk";
     private static final String KEY_SERVER = "server";
+    private static final String KEY_MODE = "mode";        // "local" | "remote"
     private static final String SETUP_URL = "file:///android_asset/setup.html";
 
     private WebView web;
     private SharedPreferences sp;
     private long lastBackAt = 0;
+    private volatile String localUrl = "";
+    private volatile String localError = "";
 
     @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
     @Override
@@ -74,7 +82,7 @@ public class MainActivity extends Activity {
         s.setUseWideViewPort(true);
         s.setSupportZoom(false);
         s.setBuiltInZoomControls(false);
-        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.1.6");
+        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.0");
 
         web.addJavascriptInterface(new Bridge(), "MDNative");
         web.setWebChromeClient(new WebChromeClient());
@@ -104,17 +112,84 @@ public class MainActivity extends Activity {
                 // 引导页里注入当前已保存的地址 + 本机网段提示
                 if (isSetupPage(url)) {
                     v.evaluateJavascript("window.MDInit && window.MDInit("
-                            + jsStr(sp.getString(KEY_SERVER, "")) + "," + jsStr(localIpPrefix()) + ")", null);
+                            + jsStr(sp.getString(KEY_SERVER, "")) + ","
+                            + jsStr(localIpPrefix()) + ","
+                            + jsStr(sp.getString(KEY_MODE, "")) + ")", null);
                 }
             }
         });
 
         String saved = sp.getString(KEY_SERVER, "");
-        if (saved == null || saved.trim().isEmpty()) {
+        String mode = sp.getString(KEY_MODE, "");
+        if ("local".equals(mode)) {
+            bootLocal();
+        } else if (saved == null || saved.trim().isEmpty()) {
             web.loadUrl(SETUP_URL);
         } else {
             web.loadUrl(saved);
         }
+    }
+
+    /** 起手机里的 Python 后端，然后把 WebView 指向它。 */
+    private void bootLocal() {
+        web.loadDataWithBaseURL(null, "<!doctype html><meta charset=utf-8>"
+                + "<style>body{margin:0;height:100vh;display:flex;align-items:center;"
+                + "justify-content:center;background:#070a10;color:#8b93a8;"
+                + "font:15px/1.7 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}</style>"
+                + "<div>正在启动本机引擎…</div>", "text/html", "utf-8", null);
+        new Thread(new Runnable() {
+            public void run() {
+                final String url = startPython();
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        if (url.isEmpty()) {
+                            showLocalFailed();
+                        } else {
+                            web.loadUrl(url);
+                        }
+                    }
+                });
+            }
+        }, "py-boot").start();
+    }
+
+    /** 第一次调用会加载整个 CPython 运行时，得几百毫秒到两秒；所以只能放在后台线程。 */
+    private String startPython() {
+        if (!localUrl.isEmpty()) return localUrl;
+        try {
+            if (!Python.isStarted()) {
+                Python.start(new AndroidPlatform(getApplicationContext()));
+            }
+            Python py = Python.getInstance();
+            int port = py.getModule("mdphone")
+                    .callAttr("start", getFilesDir().getAbsolutePath(), 8899)
+                    .toInt();
+            localUrl = "http://127.0.0.1:" + port + "/m";
+            localError = "";
+            return localUrl;
+        } catch (Throwable e) {
+            localError = e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage());
+            return "";
+        }
+    }
+
+    private void showLocalFailed() {
+        String html = "<!doctype html><meta charset=utf-8>"
+                + "<meta name=viewport content='width=device-width,initial-scale=1'>"
+                + "<style>body{margin:0;height:100vh;display:flex;flex-direction:column;"
+                + "align-items:center;justify-content:center;gap:16px;background:#070a10;"
+                + "color:#e6e9f2;font:15px/1.7 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif;"
+                + "padding:30px;text-align:center}"
+                + "h2{font-size:18px;margin:0}p{margin:0;color:#8b93a8;font-size:13px;line-height:1.8}"
+                + "code{background:#12161f;padding:8px 12px;border-radius:8px;color:#f87171;"
+                + "font-size:11px;word-break:break-all;max-width:100%;display:block;text-align:left}"
+                + "button{margin-top:8px;padding:13px 30px;border:0;border-radius:12px;font-size:15px;"
+                + "font-weight:600;color:#fff;background:linear-gradient(135deg,#7c5cff,#22d3ee)}"
+                + "</style><h2>本机引擎启动失败</h2>"
+                + "<p>手机上的 Python 没能起来。</p>"
+                + "<code>" + (localError.isEmpty() ? "未知错误" : localError) + "</code>"
+                + "<button onclick='MDNative.reset()'>换成连接电脑</button>";
+        web.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
     }
 
     private boolean isSetupPage(String url) {
@@ -204,7 +279,32 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public String getMode() {
+            return sp.getString(KEY_MODE, "");
+        }
+
+        /** 选「在这台手机上跑」：起本机引擎，成功再记下来。返回空串表示失败。 */
+        @JavascriptInterface
+        public String useLocal() {
+            String url = startPython();
+            if (!url.isEmpty()) {
+                sp.edit().putString(KEY_MODE, "local").apply();
+            }
+            return url;
+        }
+
+        @JavascriptInterface
+        public void useRemote(String url) {
+            sp.edit().putString(KEY_MODE, "remote").putString(KEY_SERVER, url).apply();
+        }
+
+        @JavascriptInterface
         public void openApp() {
+            final String mode = sp.getString(KEY_MODE, "");
+            if ("local".equals(mode)) {
+                bootLocal();
+                return;
+            }
             final String url = sp.getString(KEY_SERVER, "");
             if (url == null || url.isEmpty()) return;
             runOnUiThread(new Runnable() {
@@ -216,7 +316,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void reset() {
-            sp.edit().remove(KEY_SERVER).apply();
+            sp.edit().remove(KEY_SERVER).remove(KEY_MODE).apply();
             runOnUiThread(new Runnable() {
                 public void run() {
                     web.loadUrl(SETUP_URL);
@@ -250,7 +350,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() {
-            return "1.1.6";
+            return "1.2.0";
         }
     }
 }

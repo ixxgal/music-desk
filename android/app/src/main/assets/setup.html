@@ -84,14 +84,21 @@
     <div class="logo">♫</div>
     <div>
       <h1>音乐下载台</h1>
-      <p>连接到电脑上的那台 · <span id="ver">v1.1.6</span></p>
+      <p>选择怎么跑 · <span id="ver">v1.2.0</span></p>
     </div>
   </div>
 
   <div class="card">
-    <h2>电脑地址</h2>
-    <p class="sub">在电脑软件的「设置 → 手机访问」里能看到这个地址，通常是 <code>192.168.x.x:8899</code>。</p>
-    <label for="addr">IP:端口</label>
+    <h2>在这台手机上直接跑</h2>
+    <p class="sub">手机里自带引擎，不需要电脑、不需要 Wi-Fi。<br>独立运行，下载和曲库都在这台手机上。</p>
+    <button id="btnLocal" style="width:100%">用这台手机运行</button>
+    <div class="status" id="localStatus"></div>
+  </div>
+
+  <div class="card">
+    <h2>连接电脑</h2>
+    <p class="sub">电脑上的那台在跑着，手机只当遥控器 —— 曲库、下载都在电脑上。适合电脑常开、想省手机空间。</p>
+    <label for="addr">电脑地址 · IP:端口</label>
     <input id="addr" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false"
            placeholder="192.168.1.5:8899">
     <div class="row">
@@ -102,16 +109,14 @@
   </div>
 
   <div class="card">
-    <h2>怎么找这个地址</h2>
+    <h2>两种方式怎么选</h2>
     <ol>
-      <li>电脑上打开 <b>音乐下载台</b></li>
-      <li>右上角 <b>设置</b> → 勾上 <b>允许同一 Wi-Fi 下的手机访问</b></li>
-      <li>重启软件，设置里会出现 <b>二维码和地址</b></li>
-      <li>手机连同一个 Wi-Fi，把地址填到上面</li>
+      <li><b>手机直接跑</b> — 独立，不用电脑；占手机存储，抖音/快手仍需电脑</li>
+      <li><b>连电脑</b> — 电脑上打开 <b>音乐下载台</b> → 设置 → 勾 <b>允许同一 Wi-Fi 下的手机访问</b> → 重启，设置里会出现地址和二维码</li>
     </ol>
   </div>
 
-  <div class="foot">地址只存在这台手机上，不会上传到任何地方</div>
+  <div class="foot">无论哪种，文件都不会上传到任何服务器</div>
 </div>
 
 <script>
@@ -120,12 +125,49 @@
   var statusEl = document.getElementById('status');
   var btnGo = document.getElementById('btnGo');
   var btnPaste = document.getElementById('btnPaste');
+  var btnLocal = document.getElementById('btnLocal');
+  var localStatus = document.getElementById('localStatus');
   var ipPrefix = '';
 
   function setStatus(msg, kind) {
     statusEl.textContent = msg || '';
     statusEl.className = 'status' + (kind ? ' ' + kind : '');
   }
+
+  function setLocal(msg, kind, done) {
+    localStatus.textContent = msg || '';
+    localStatus.className = 'status' + (kind ? ' ' + kind : '');
+    btnLocal.disabled = !!done;
+  }
+
+  /* ---------- 在这台手机上跑 ---------- */
+
+  btnLocal.addEventListener('click', function () {
+    if (!window.MDNative || !window.MDNative.useLocal) {
+      setLocal('浏览器预览模式：装到手机上才有本机引擎', 'bad');
+      return;
+    }
+    setLocal('正在启动引擎…（第一次要几秒）');
+    btnLocal.disabled = true;
+    // useLocal 要加载整个 CPython，同步调用会卡 UI，挪到下一帧再干
+    setTimeout(function () {
+      var url = '';
+      try {
+        url = window.MDNative.useLocal() || '';
+      } catch (e) {
+        setLocal('启动失败：' + (e && e.message ? e.message : e), 'bad');
+        btnLocal.disabled = false;
+        return;
+      }
+      if (!url) {
+        setLocal('引擎没能起来，换「连接电脑」试试', 'bad');
+        btnLocal.disabled = false;
+        return;
+      }
+      setLocal('引擎已启动，正在打开…', 'ok', true);
+      setTimeout(function () { window.MDNative.openApp(); }, 380);
+    }, 60);
+  });
 
   /** 用户可能填 192.168.1.5 / http://... / 带路径，统一成 http://host:port */
   function normalize(raw) {
@@ -152,7 +194,7 @@
       if (!j || !j.ok) throw new Error('返回不正常');
       setStatus('连上了 · v' + (j.version || '?') + '，正在打开…', 'ok');
       if (window.MDNative) {
-        window.MDNative.saveServer(base);
+        window.MDNative.useRemote(base);
         setTimeout(function () { window.MDNative.openApp(); }, 420);
       } else {
         setStatus('连上了（浏览器预览模式，保存不了地址）', 'ok');
@@ -189,10 +231,12 @@
     }
   });
 
-  // Java 侧在页面加载完后注入已有地址 + 本机网段
-  window.MDInit = function (saved, prefix) {
+  // Java 侧在页面加载完后注入：上次的模式 / 电脑地址 / 本机网段
+  window.MDInit = function (saved, prefix, mode) {
     ipPrefix = prefix || '';
-    if (saved) {
+    if (mode === 'local') {
+      setLocal('上次就是用本机引擎跑的，点上面按钮启动它');
+    } else if (saved) {
       addr.value = String(saved).replace(/^http:\/\//, '');
       setStatus('上次连的是这个，点「连接」继续', 'ok');
     } else if (ipPrefix) {
