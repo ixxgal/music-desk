@@ -1,7 +1,7 @@
 /* 音乐下载台 · 手机端 Service Worker
    只缓存静态外壳（html/css/js/图标），API 和媒体永远走网络 —— 曲库文件动辄几十兆，
    缓存它没意义，而且用户删了文件缓存里还留着会显示还能播。 */
-const VERSION = 'md-1.2.6';
+const VERSION = 'md-1.2.7';
 const SHELL = [
   '/m',
   '/static/m.css',

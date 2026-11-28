@@ -52,6 +52,7 @@ public class MainActivity extends Activity {
     private WebView web;
     private SharedPreferences sp;
     private long pendingApkId = -1;
+    private boolean blankChecked = false;
     private android.content.BroadcastReceiver apkReceiver;
     private long lastBackAt = 0;
     private volatile String localUrl = "";
@@ -62,6 +63,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         sp = getSharedPreferences(PREF, MODE_PRIVATE);
+        installCrashHandler();
 
         // 状态栏跟随深色主题
         Window w = getWindow();
@@ -87,7 +89,7 @@ public class MainActivity extends Activity {
         s.setUseWideViewPort(true);
         s.setSupportZoom(false);
         s.setBuiltInZoomControls(false);
-        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.6");
+        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.7");
 
         web.addJavascriptInterface(new Bridge(), "MDNative");
         web.setWebChromeClient(new WebChromeClient());
@@ -114,6 +116,7 @@ public class MainActivity extends Activity {
 
             @Override
             public void onPageFinished(WebView v, String url) {
+                checkBlank(v, url);
                 // 引导页里注入当前已保存的地址 + 本机网段提示
                 if (isSetupPage(url)) {
                     v.evaluateJavascript("window.MDInit && window.MDInit("
@@ -149,8 +152,18 @@ public class MainActivity extends Activity {
                 }
             }
         };
-        registerReceiver(apkReceiver, new android.content.IntentFilter(
-                android.app.DownloadManager.ACTION_DOWNLOAD_COMPLETE));
+        // Android 13+ 注册非系统专属广播必须显式指定导出标志，少了会抛 SecurityException。
+        // 这里再包一层 try：装不了更新不该把整个界面拖死。
+        try {
+            android.content.IntentFilter f =
+                    new android.content.IntentFilter(android.app.DownloadManager.ACTION_DOWNLOAD_COMPLETE);
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(apkReceiver, f, Context.RECEIVER_EXPORTED);
+            } else {
+                registerReceiver(apkReceiver, f);
+            }
+        } catch (Throwable ignore) {
+        }
 
         String saved = sp.getString(KEY_SERVER, "");
         String mode = sp.getString(KEY_MODE, "");
@@ -188,6 +201,40 @@ public class MainActivity extends Activity {
                 });
             }
         }, "py-boot").start();
+    }
+
+    /** 崩溃时把堆栈落到 files/crash.txt，下次启动能在错误页看到。 */
+    private void installCrashHandler() {
+        final Thread.UncaughtExceptionHandler prev = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+            public void uncaughtException(Thread th, Throwable e) {
+                try {
+                    java.io.File f = new java.io.File(getFilesDir(), "crash.txt");
+                    java.io.FileWriter w = new java.io.FileWriter(f, false);
+                    w.write(new java.util.Date().toString() + "\n");
+                    w.write(android.util.Log.getStackTraceString(e));
+                    w.close();
+                } catch (Throwable ignore) {
+                }
+                if (prev != null) prev.uncaughtException(th, e);
+            }
+        });
+    }
+
+    /** 上一次崩溃留下的堆栈（有就返回，顺便删掉，避免反复弹）。 */
+    private String takeCrashLog() {
+        try {
+            java.io.File f = new java.io.File(getFilesDir(), "crash.txt");
+            if (!f.isFile()) return "";
+            byte[] b = new byte[(int) f.length()];
+            java.io.FileInputStream in = new java.io.FileInputStream(f);
+            int n = in.read(b);
+            in.close();
+            f.delete();
+            return n > 0 ? new String(b, 0, n, "UTF-8") : "";
+        } catch (Throwable e) {
+            return "";
+        }
     }
 
     /** 有存储权限就用公共的「音乐/音乐下载台」，系统「音频」分类和文件管理器都能看见；没有就退回私有目录。 */
@@ -230,6 +277,14 @@ public class MainActivity extends Activity {
     }
 
     private void showLocalFailed() {
+        // 上一次崩溃留下的堆栈也一起显示，省得没 adb 时只能干瞪眼
+        String crash = takeCrashLog();
+        String detail = localError.isEmpty() ? "未知错误" : localError;
+        String dir = "";
+        try {
+            dir = dataRoot().getAbsolutePath();
+        } catch (Throwable ignore) {
+        }
         String html = "<!doctype html><meta charset=utf-8>"
                 + "<meta name=viewport content='width=device-width,initial-scale=1'>"
                 + "<style>body{margin:0;height:100vh;display:flex;flex-direction:column;"
@@ -238,13 +293,17 @@ public class MainActivity extends Activity {
                 + "padding:30px;text-align:center}"
                 + "h2{font-size:18px;margin:0}p{margin:0;color:#8b93a8;font-size:13px;line-height:1.8}"
                 + "code{background:#12161f;padding:8px 12px;border-radius:8px;color:#f87171;"
-                + "font-size:11px;word-break:break-all;max-width:100%;display:block;text-align:left}"
+                + "font-size:11px;word-break:break-all;max-width:100%;display:block;text-align:left;"
+                + "max-height:220px;overflow:auto;white-space:pre-wrap}"
                 + "button{margin-top:8px;padding:13px 30px;border:0;border-radius:12px;font-size:15px;"
                 + "font-weight:600;color:#fff;background:linear-gradient(135deg,#7c5cff,#22d3ee)}"
                 + "</style><h2>本机引擎启动失败</h2>"
                 + "<p>手机上的 Python 没能起来。</p>"
-                + "<code>" + (localError.isEmpty() ? "未知错误" : localError) + "</code>"
-                + "<button onclick='MDNative.reset()'>换成连接电脑</button>";
+                + "<code>" + detail + "</code>"
+                + (dir.isEmpty() ? "" : "<p>数据目录：" + dir + "</p>")
+                + (crash.isEmpty() ? "" : "<code>" + crash.replace("<", "&lt;") + "</code>")
+                + "<button onclick='MDNative.reset()'>换成连接电脑</button>"
+                + "<button onclick='location.reload()' style='background:#1b2130'>重试一次</button>";
         web.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
     }
 
@@ -273,6 +332,98 @@ public class MainActivity extends Activity {
         web.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
     }
 
+    /** 本机引擎页面加载完仍是空的，就把「为什么空」摆给用户看，而不是留一片白。 */
+    private void checkBlank(WebView v, String url) {
+        if (url == null || !url.contains("127.0.0.1")) return;
+        if (blankChecked) return;
+        v.postDelayed(new Runnable() {
+            public void run() {
+                try {
+                    v.evaluateJavascript(
+                            "(function(){var b=document.body;"
+                                    + "return JSON.stringify({txt:b?b.innerText.trim().length:-1,"
+                                    + "html:b?b.innerHTML.length:-1,"
+                                    + "title:document.title||''});})()",
+                            new android.webkit.ValueCallback<String>() {
+                                public void onReceiveValue(String value) {
+                                    if (blankChecked) return;
+                                    String raw = value == null ? "" : value;
+                                    int txt = pickInt(raw, "txt");
+                                    int htmlLen = pickInt(raw, "html");
+                                    // 有字或者有结构就算正常，放过
+                                    if (txt > 0 || htmlLen > 40) return;
+                                    blankChecked = true;
+                                    showBlankDiag(v.getUrl(), txt, htmlLen, raw);
+                                }
+                            });
+                } catch (Throwable ignore) {
+                }
+            }
+        }, 1400);
+    }
+
+    /** 从 JSON 串里抠一个整数字段，失败返回 -1。 */
+    private int pickInt(String json, String key) {
+        try {
+            int i = json.indexOf("\"" + key + "\":");
+            if (i < 0) return -1;
+            int s = i + key.length() + 3;
+            int e = s;
+            while (e < json.length() && (json.charAt(e) == '-' || Character.isDigit(json.charAt(e)))) e++;
+            if (e == s) return -1;
+            return Integer.parseInt(json.substring(s, e));
+        } catch (Throwable e) {
+            return -1;
+        }
+    }
+
+    /** 页面空白时的诊断页：告诉用户服务活没活、页面大小、以及能不能换连接方式。 */
+    private void showBlankDiag(final String url, final int txt, final int htmlLen, final String raw) {
+        // 探活要联网，不能在主线程干
+        new Thread(new Runnable() {
+            public void run() {
+                String ping;
+                try {
+                    java.net.HttpURLConnection c = (java.net.HttpURLConnection)
+                            new java.net.URL("http://127.0.0.1:8899/api/ping").openConnection();
+                    c.setConnectTimeout(2500);
+                    c.setReadTimeout(2500);
+                    ping = "HTTP " + c.getResponseCode();
+                    c.disconnect();
+                } catch (Throwable e) {
+                    ping = "异常：" + e.getClass().getSimpleName();
+                }
+                final String pingText = ping;
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        renderBlankDiag(url, txt, htmlLen, raw, pingText);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void renderBlankDiag(String url, int txt, int htmlLen, String raw, String ping) {
+        String html = "<!doctype html><meta charset=utf-8>"
+                + "<meta name=viewport content='width=device-width,initial-scale=1'>"
+                + "<style>body{margin:0;min-height:100vh;display:flex;flex-direction:column;"
+                + "align-items:center;justify-content:center;gap:14px;background:#070a10;"
+                + "color:#e6e9f2;font:15px/1.7 -apple-system,'PingFang SC',sans-serif;padding:28px}"
+                + "h2{font-size:18px;margin:0}p{margin:0;color:#8b93a8;font-size:13px;line-height:1.8;"
+                + "text-align:center;word-break:break-all}"
+                + "code{background:#12161f;padding:9px 12px;border-radius:8px;color:#f87171;"
+                + "font-size:11px;word-break:break-all;display:block;max-width:100%;white-space:pre-wrap}"
+                + "button{margin-top:6px;padding:13px 30px;border:0;border-radius:12px;font-size:15px;"
+                + "font-weight:600;color:#fff;background:linear-gradient(135deg,#7c5cff,#22d3ee)}"
+                + "</style><h2>界面没画出来</h2>"
+                + "<p>本机服务：" + ping + "</p>"
+                + "<p>页面地址：<br>" + (url == null ? "" : url) + "</p>"
+                + "<code>文字长度 " + txt + " / HTML 长度 " + htmlLen + "\n" + raw.replace("<", "&lt;") + "</code>"
+                + "<button onclick='location.reload()'>重新加载</button>"
+                + "<button onclick='MDNative.reset()' style='background:#1b2130'>换成连接电脑</button>";
+        web.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
+    }
+
     /** 电脑大概在哪个网段，引导页拿来做输入提示。 */
     private String localIpPrefix() {
         try {
@@ -298,6 +449,46 @@ public class MainActivity extends Activity {
         if (s == null) return "\"\"";
         return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"")
                 .replace("\n", "\\n").replace("\r", "") + "\"";
+    }
+
+    @Override
+    protected void onDestroy() {
+        try {
+            if (apkReceiver != null) unregisterReceiver(apkReceiver);
+        } catch (Throwable ignore) {
+        }
+        apkReceiver = null;
+        super.onDestroy();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // 兜底：万一初始加载没发生，别让用户对着白屏
+        try {
+            if (web != null && web.getUrl() == null) {
+                String m2 = sp.getString(KEY_MODE, "");
+                if ("local".equals(m2)) bootLocal();
+                else web.loadUrl(SETUP_URL);
+            }
+        } catch (Throwable ignore) {
+        }
+        // 回到前台扫一遍媒体库，新下的歌立刻出现在系统「音频」里
+        try {
+            java.io.File dir = new java.io.File(dataRoot(), "downloads");
+            java.io.File[] fs = dir.listFiles();
+            if (fs != null) {
+                for (java.io.File f : fs) {
+                    if (!f.isFile()) continue;
+                    String n = f.getName().toLowerCase();
+                    if (n.endsWith(".mp3") || n.endsWith(".m4a") || n.endsWith(".aac")
+                            || n.endsWith(".flac") || n.endsWith(".ogg") || n.endsWith(".wav")) {
+                        MediaScannerConnection.scanFile(this, new String[]{f.getAbsolutePath()}, null, null);
+                    }
+                }
+            }
+        } catch (Throwable ignore) {
+        }
     }
 
     @Override
@@ -418,7 +609,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() {
-            return "1.2.6";
+            return "1.2.7";
         }
 
         /** 用系统浏览器打开一个链接（更新下载页之类）。 */
