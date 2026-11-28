@@ -83,7 +83,7 @@ public class MainActivity extends Activity {
         s.setUseWideViewPort(true);
         s.setSupportZoom(false);
         s.setBuiltInZoomControls(false);
-        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.3");
+        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.4");
 
         web.addJavascriptInterface(new Bridge(), "MDNative");
         web.setWebChromeClient(new WebChromeClient());
@@ -367,7 +367,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() {
-            return "1.2.3";
+            return "1.2.4";
         }
 
         /** 用系统浏览器打开一个链接（更新下载页之类）。 */

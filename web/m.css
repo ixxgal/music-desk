@@ -824,3 +824,7 @@ textarea#q:focus { border-color: rgba(124, 92, 255, .55); }
   font-size: 13px;
   color: #cfc2ff;
 }
+
+/* 通用隐藏：任何元素带 hidden 都必须真的不可见、不可点。
+   少了这条，.sheet 即使带着 hidden 也仍然铺满全屏、吞掉所有点击。 */
+.hidden { display: none !important; }
