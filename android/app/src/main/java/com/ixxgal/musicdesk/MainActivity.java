@@ -101,7 +101,7 @@ public class MainActivity extends Activity {
         s.setUseWideViewPort(true);
         s.setSupportZoom(false);
         s.setBuiltInZoomControls(false);
-        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.3.0");
+        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.3.1");
 
         web.addJavascriptInterface(new Bridge(), "MDNative");
         web.setWebChromeClient(new WebChromeClient());
@@ -587,7 +587,13 @@ public class MainActivity extends Activity {
             }
         } catch (Throwable ignore) {
         }
-        return "app=1.3.0 sdk=" + android.os.Build.VERSION.SDK_INT
+        String ver = "?";
+        try {
+            ver = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Throwable ignore) {
+        }
+        return "app=" + ver
+                + " sdk=" + android.os.Build.VERSION.SDK_INT
                 + " device=" + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL
                 + wv + "\n";
     }
@@ -744,15 +750,12 @@ public class MainActivity extends Activity {
                                     }, 700);
                                 } else if (!blankRetried) {
                                     // 连问 6 次都问不到 —— 文档压根没建起来。
-                                    // 清干净、换个地址重来一次，再不行才认输。
+                                    // 先清干净，然后绕开 WebView 的网络栈，由 Java 取页面直接塞进来。
                                     blankRetried = true;
-                                    android.util.Log.w("MusicDesk", "连问 6 次都拿不到页面状态，重载: " + target);
+                                    android.util.Log.w("MusicDesk", "连问 6 次都拿不到页面状态，改走代理加载: " + target);
                                     sweepServiceWorker(web);
                                     web.clearCache(true);
-                                    String bust = target + (target.contains("?") ? "&" : "?")
-                                            + "r=" + System.currentTimeMillis();
-                                    web.loadUrl(bust);
-                                    checkBlank(web, bust);
+                                    loadByProxy(target);
                                 } else {
                                     blankChecked = true;
                                     android.util.Log.w("MusicDesk", "重载后依然拿不到页面状态: " + target);
@@ -765,17 +768,14 @@ public class MainActivity extends Activity {
                             int htmlLen = pickInt(raw, "html");
                             // 有字或者有结构就算正常，放过
                             if (txt > 0 || htmlLen > 40) return;
-                            // 第一次空：多半是加载被打断、或者命中了旧的缓存，
-                            // 先清缓存再用带新参数的地址重来一次
+                            // 第一次空：多半是加载被打断、或者命中了旧的缓存。
+                            // 清干净，然后绕开 WebView 网络栈，由 Java 取页面直接塞进来。
                             if (!blankRetried) {
                                 blankRetried = true;
-                                android.util.Log.w("MusicDesk", "页面为空，清缓存后重载: " + target);
+                                android.util.Log.w("MusicDesk", "页面为空，改走代理加载: " + target);
                                 sweepServiceWorker(web);
                                 web.clearCache(true);
-                                String bust = target + (target.contains("?") ? "&" : "?")
-                                        + "r=" + System.currentTimeMillis();
-                                web.loadUrl(bust);
-                                checkBlank(web, bust);
+                                loadByProxy(target);
                                 return;
                             }
                             blankChecked = true;
@@ -861,6 +861,122 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * 用 Java 自己把页面取下来，再交给 WebView 渲染。
+     *
+     * 最后一道兜底。服务器明确回的是好 HTML（诊断页已经证明了），但 WebView 从自己的
+     * 网络栈去拿就是画不出来 —— 缓存、Cookie、Service Worker、中间层，都在这条路上，
+     * 任何一个坏了都能让文档建不起来。既然如此就绕开它：Java 用 HttpURLConnection 取，
+     * WebView 只负责排版。
+     *
+     * baseUrl 给 `http://127.0.0.1:端口/`，这样页面里的 `/static/m.css`、`/api/*`
+     * 还会被当同源请求，接口照常能用。
+     */
+    private void loadByProxy(final String pageUrl) {
+        final String base;
+        try {
+            java.net.URL u = new java.net.URL(pageUrl);
+            base = u.getProtocol() + "://" + u.getHost()
+                    + (u.getPort() > 0 ? ":" + u.getPort() : "") + "/";
+        } catch (Throwable e) {
+            android.util.Log.w("MusicDesk", "loadByProxy 地址解析失败: " + pageUrl);
+            return;
+        }
+        new Thread(new Runnable() {
+            public void run() {
+                String html = null;
+                String why = "";
+                try {
+                    java.net.HttpURLConnection c =
+                            (java.net.HttpURLConnection) new java.net.URL(pageUrl).openConnection();
+                    c.setConnectTimeout(6000);
+                    c.setReadTimeout(12000);
+                    c.setUseCaches(false);
+                    c.setRequestProperty("Cache-Control", "no-store");
+                    c.setRequestProperty("User-Agent", "MusicDesk-Proxy/1.0");
+                    int code = c.getResponseCode();
+                    java.io.InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
+                    if (in != null) {
+                        java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                        byte[] b = new byte[8192];
+                        int r, total = 0;
+                        while ((r = in.read(b)) > 0 && total < 4 * 1024 * 1024) {
+                            bo.write(b, 0, r);
+                            total += r;
+                        }
+                        in.close();
+                        html = new String(bo.toByteArray(), "UTF-8");
+                        why = "HTTP " + code + " / " + total + " bytes";
+                    } else {
+                        why = "HTTP " + code + " / 空响应体";
+                    }
+                    c.disconnect();
+                } catch (Throwable e) {
+                    why = e.getClass().getSimpleName() + " " + e.getMessage();
+                }
+                if (html == null || html.length() < 200) {
+                    android.util.Log.w("MusicDesk", "代理加载失败: " + why);
+                    final String msg = why;
+                    runOnUiThread(new Runnable() {
+                        public void run() {
+                            blankChecked = true;
+                            showBlankDiag(pageUrl, -1, -1, "Java 直取也失败了：" + msg);
+                        }
+                    });
+                    return;
+                }
+                final String body = html;
+                final String detail = why;
+                android.util.Log.i("MusicDesk", "代理加载成功: " + detail);
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        try {
+                            loadedUrl = pageUrl;
+                            web.loadDataWithBaseURL(base, body, "text/html", "utf-8", null);
+                            // 代理加载后不再走 checkBlank 那一套（它不是 http 导航，意义不同）；
+                            // 但给一次机会确认它真的渲染出来了，没有就认输报错。
+                            web.postDelayed(new Runnable() {
+                                public void run() {
+                                    if (blankChecked) return;
+                                    try {
+                                        web.evaluateJavascript(
+                                                "(function(){var b=document.body;"
+                                                        + "return b?''+b.innerText.trim().length:'-1';})()",
+                                                new android.webkit.ValueCallback<String>() {
+                                                    public void onReceiveValue(String v) {
+                                                        int n = -1;
+                                                        try {
+                                                            n = Integer.parseInt(
+                                                                    v == null ? "" : v.replace("\"", "").trim());
+                                                        } catch (Throwable ignore) {
+                                                        }
+                                                        if (n > 0) {
+                                                            android.util.Log.i("MusicDesk",
+                                                                    "代理页面渲染成功，正文 " + n + " 字");
+                                                        } else {
+                                                            blankChecked = true;
+                                                            showBlankDiag(pageUrl, n, -1,
+                                                                    "代理送的 HTML 有 " + body.length()
+                                                                            + " 字，但 WebView 渲染出来是空的。"
+                                                                            + "\n这基本只剩一个原因：系统 WebView 自己有问题"
+                                                                            + "（可以在应用商店更新 Android System WebView / Chrome 试试）。");
+                                                        }
+                                                    }
+                                                });
+                                    } catch (Throwable ignore) {
+                                    }
+                                }
+                            }, 1800);
+                        } catch (Throwable e) {
+                            blankChecked = true;
+                            showBlankDiag(pageUrl, -1, -1, "loadDataWithBaseURL 抛异常: " + e);
+                        }
+                    }
+                });
+            }
+        }).start();
+    }
+
     private void renderBlankDiag(String url, int txt, int htmlLen, String raw, String ping, String head) {
         String html = "<!doctype html><meta charset=utf-8>"
                 + "<meta name=viewport content='width=device-width,initial-scale=1'>"
@@ -875,6 +991,8 @@ public class MainActivity extends Activity {
                 + "button{margin-top:6px;padding:13px 30px;border:0;border-radius:12px;font-size:15px;"
                 + "font-weight:600;color:#fff;background:linear-gradient(135deg,#7c5cff,#22d3ee)}"
                 + "</style><h2>界面没画出来</h2>"
+                + "<p style='font-size:11.5px;color:#5c6478'>"
+                + buildInfo().replace("\n", " ").replace("<", "&lt;") + "</p>"
                 + "<p>本机服务：<b>" + ping + "</b></p>"
                 + "<p>页面地址：<br>" + (url == null ? "" : url) + "</p>"
                 + "<p>页面里：文字 " + txt + " 字 / HTML " + htmlLen + " 字</p>"
@@ -1085,7 +1203,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() {
-            return "1.3.0";
+            return "1.3.1";
         }
 
         /** 把整个界面重建一遍（渲染进程崩了之后的「重开界面」用）。 */

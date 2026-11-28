@@ -4,7 +4,7 @@
    1.2.9 之前这里把 '/m' 也塞进了 SHELL，结果一旦某次缓存到半截的 HTML
    （引擎刚起、或者并发解压写坏），之后每次打开都返回那份坏页面，
    连 body 都没有，用户看到的就是「界面没画出来」且怎么 reload 都没用。 */
-const VERSION = 'md-1.3.0';
+const VERSION = 'md-1.3.1';
 const SHELL = [
   '/static/m.css',
   '/static/m.js',
