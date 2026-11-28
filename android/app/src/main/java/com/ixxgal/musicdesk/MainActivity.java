@@ -83,7 +83,7 @@ public class MainActivity extends Activity {
         s.setUseWideViewPort(true);
         s.setSupportZoom(false);
         s.setBuiltInZoomControls(false);
-        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.2");
+        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.3");
 
         web.addJavascriptInterface(new Bridge(), "MDNative");
         web.setWebChromeClient(new WebChromeClient());
@@ -291,11 +291,22 @@ public class MainActivity extends Activity {
         /** 选「在这台手机上跑」：起本机引擎，成功再记下来。返回空串表示失败。 */
         @JavascriptInterface
         public String useLocal() {
+            // 已经在跑就直接用，别重复启动（第二次会卡在端口占用上几十秒）
+            if (localUrl != null && !localUrl.isEmpty()) {
+                sp.edit().putString(KEY_MODE, "local").apply();
+                return localUrl;
+            }
             String url = startPython();
             if (!url.isEmpty()) {
                 sp.edit().putString(KEY_MODE, "local").apply();
             }
             return url;
+        }
+
+        /** 上一次本机引擎是否已经起过（前端据此显示「正在运行」而不是「启动」）。 */
+        @JavascriptInterface
+        public boolean localReady() {
+            return localUrl != null && !localUrl.isEmpty();
         }
 
         @JavascriptInterface
@@ -356,7 +367,31 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() {
-            return "1.2.2";
+            return "1.2.3";
+        }
+
+        /** 用系统浏览器打开一个链接（更新下载页之类）。 */
+        @JavascriptInterface
+        public void openUrl(final String url) {
+            if (url == null || url.isEmpty()) return;
+            runOnUiThread(new Runnable() {
+                public void run() {
+                    try {
+                        android.content.Intent it = new android.content.Intent(
+                                android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url));
+                        it.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(it);
+                    } catch (Throwable e) {
+                        Toast.makeText(MainActivity.this, "打不开链接", Toast.LENGTH_SHORT).show();
+                    }
+                }
+            });
+        }
+
+        /** 下载目录的绝对路径，给设置面板显示用。 */
+        @JavascriptInterface
+        public String downloadDir() {
+            return new java.io.File(getFilesDir(), "downloads").getAbsolutePath();
         }
 
         /** 曲库里这个文件的完整路径（手机上就是应用私有目录）。 */

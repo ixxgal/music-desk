@@ -7,6 +7,8 @@ const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 
 const el = {
   hdSub: $('#hdSub'),
+  hdR: $('.hd-r'),
+  btnSettings: $('#btnSettings'),
   btnRefresh: $('#btnRefresh'),
   q: $('#q'),
   btnSrc: $('#btnSrc'),
@@ -55,6 +57,10 @@ const state = {
   playing: '',
   playingName: '',
   mode: 'idle',   // idle | searching | results
+  appVersion: '',
+  downloadDir: '',
+  latestVersion: '',
+  hasUpdate: false,
 };
 
 /* ---------------- 基础工具 ---------------- */
@@ -362,6 +368,150 @@ async function loadJobs() {
 /* ---------------- 曲库 ---------------- */
 function isVideo(f) {
   return f.kind === 'video' || /\.(mp4|m4v|mov|webm|mkv)$/i.test(f.name || '');
+}
+
+/* ---------------- 设置面板 ---------------- */
+const REPO = 'ixxgal/music-desk';
+const RELEASE_PAGE = 'https://github.com/' + REPO + '/releases/latest';
+const DL_PAGE = 'https://github.com/' + REPO + '/releases';
+
+function native() {
+  return (window.MDNative && window.MDNative.getMode) ? window.MDNative : null;
+}
+
+function modeText() {
+  const n = native();
+  if (!n) return { name: '浏览器模式', sub: '文件存在电脑上，页面只是遥控器' };
+  const mode = n.getMode() || '';
+  const srv = (n.getServer && n.getServer()) || '';
+  if (mode === 'local') return { name: '本机引擎', sub: '不依赖电脑，歌直接下到这台手机' };
+  if (mode === 'remote') return { name: '连接电脑', sub: srv || '（未填地址）' };
+  return { name: '未选择', sub: '点下面其中一个开始' };
+}
+
+function cmpVer(a, b) {
+  const pa = String(a || '0').replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0);
+  const pb = String(b || '0').replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  }
+  return 0;
+}
+
+async function checkAppUpdate(manual) {
+  const cur = state.appVersion || '0';
+  const line = document.getElementById('setUpdLine');
+  const setLine = (txt, cls) => {
+    if (!line) return;
+    line.textContent = txt;
+    line.className = 'set-sub' + (cls ? ' ' + cls : '');
+  };
+  if (manual) setLine('正在查 GitHub…');
+  try {
+    const r = await fetch('https://api.github.com/repos/' + REPO + '/releases/latest', {
+      cache: 'no-store',
+      headers: { Accept: 'application/vnd.github+json' },
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    const latest = String(j.tag_name || '').replace(/^v/, '');
+    state.latestVersion = latest;
+    if (cmpVer(latest, cur) > 0) {
+      setLine('有新版本 v' + latest + '，点上面「去下载」', 'ok');
+      state.hasUpdate = true;
+      el.hdSub.textContent = 'v' + cur + ' · 有新版本 v' + latest;
+    } else {
+      setLine('已是最新（v' + cur + '）', '');
+      state.hasUpdate = false;
+    }
+  } catch (e) {
+    setLine(manual ? '查不到（可能没网或被墙），可点「去下载」自己看' : '当前 v' + cur, manual ? 'bad' : '');
+  }
+}
+
+function showSettingsSheet() {
+  const m = modeText();
+  const n = native();
+  const dir = state.downloadDir || '（未取到）';
+  const cur = state.appVersion || '?';
+
+  const html =
+    '<div class="set-group">' +
+      '<div class="set-label">运行方式</div>' +
+      '<div class="set-now"><b>' + esc(m.name) + '</b><span>' + esc(m.sub) + '</span></div>' +
+      (n
+        ? '<div class="set-btns">' +
+            '<button class="btn ghost" id="setLocal">用这台手机运行</button>' +
+            '<button class="btn ghost" id="setRemote">连接电脑</button>' +
+          '</div>'
+        : '<div class="set-sub">在浏览器里打开时只能连电脑；装成 App 后可以选本机引擎。</div>') +
+    '</div>' +
+
+    '<div class="set-group">' +
+      '<div class="set-label">下载位置</div>' +
+      '<div class="set-path" id="setPath">' + esc(dir) + '</div>' +
+      '<button class="btn ghost wide" id="setCopyPath">复制这个路径</button>' +
+    '</div>' +
+
+    '<div class="set-group">' +
+      '<div class="set-label">版本</div>' +
+      '<div class="set-row"><span>当前</span><code>v' + esc(cur) + '</code></div>' +
+      '<div class="set-sub" id="setUpdLine">' + (state.hasUpdate ? '有新版本 v' + esc(state.latestVersion || '') : '') + '</div>' +
+      '<div class="set-btns">' +
+        '<button class="btn ghost" id="setCheck">检查更新</button>' +
+        '<button class="btn ghost" id="setGoDl">去下载</button>' +
+      '</div>' +
+    '</div>' +
+
+    (n ? '<div class="set-group"><button class="btn ghost wide" id="setReset">重新选一次连接方式</button></div>' : '');
+
+  openSheet('设置', html, () => {
+    const click = (id, fn) => { const b = document.getElementById(id); if (b) b.onclick = fn; };
+
+    click('setLocal', () => {
+      if (!window.MDNative.useLocal) return;
+      closeSheet();
+      toast('正在启动本机引擎…');
+      setTimeout(() => {
+        const url = window.MDNative.useLocal();
+        if (url && url.indexOf('http') === 0) location.href = url;
+        else toast('引擎启动失败：' + (url || '未知错误'), 'bad');
+      }, 80);
+    });
+
+    click('setRemote', () => {
+      closeSheet();
+      setTimeout(() => {
+        const cur2 = (window.MDNative.getServer && window.MDNative.getServer()) || '';
+        if (cur2 && window.MDNative.useRemote) {
+          window.MDNative.useRemote(cur2);
+          location.href = cur2.replace(/\/+$/, '') + '/m';
+        } else if (window.MDNative.reset) {
+          window.MDNative.reset();
+        }
+      }, 80);
+    });
+
+    click('setCopyPath', async () => {
+      try {
+        await navigator.clipboard.writeText(dir);
+        toast('路径已复制');
+      } catch {
+        toast('复制不了，长按上面的路径手选');
+      }
+    });
+
+    click('setCheck', () => checkAppUpdate(true));
+
+    click('setGoDl', () => {
+      if (n && n.openUrl) n.openUrl(DL_PAGE);
+      else window.open(DL_PAGE, '_blank');
+    });
+
+    click('setReset', () => {
+      if (window.MDNative.reset) window.MDNative.reset();
+    });
+  });
 }
 
 /* ---------------- 底部弹层（代替原生 select / alert） ---------------- */
@@ -706,7 +856,8 @@ async function ping() {
   try {
     const r = await api('/api/ping');
     if (r.ok) {
-      el.hdSub.textContent = '已连接 · v' + (r.version || '?');
+      state.appVersion = r.version || '?';
+      el.hdSub.textContent = '已连接 · v' + state.appVersion;
       return true;
     }
     el.hdSub.textContent = '服务异常';
@@ -716,11 +867,27 @@ async function ping() {
   return false;
 }
 
+async function loadSettings() {
+  // App 里能直接拿到真实目录（应用私有目录），比后端返回的更直观
+  const n = native();
+  if (n && n.downloadDir) {
+    try { state.downloadDir = n.downloadDir(); } catch { /* 忽略 */ }
+  }
+  try {
+    const r = await api('/api/settings');
+    if (r.ok && r.settings && !state.downloadDir) {
+      state.downloadDir = r.settings.download_dir || '';
+    }
+  } catch { /* 忽略，设置面板里会显示未取到 */ }
+}
+
 (async function boot() {
   bindSheetOnce();
   el.btnSrc.addEventListener('click', showSrcSheet);
+  if (el.btnSettings) el.btnSettings.addEventListener('click', showSettingsSheet);
 
   await ping();
+  await loadSettings();
   await loadJobs();
   await loadHist();
   await loadFiles();
@@ -733,6 +900,9 @@ async function ping() {
     switchTab(qs.get('tab'));
   }
   schedulePoll();
+
+  // 静默查一次新版：查不到就算了，不打扰
+  setTimeout(() => checkAppUpdate(false), 2500);
 
   // PWA：注册 service worker，让「添加到主屏幕」后能全屏打开、断网也认得壳
   if ('serviceWorker' in navigator) {
