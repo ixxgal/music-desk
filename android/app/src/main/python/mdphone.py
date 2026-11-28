@@ -25,7 +25,7 @@ from pathlib import Path
 
 import mdphone_core as C
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 UA = C.UA
 
 DATA_DIR = ""
@@ -39,11 +39,18 @@ _history = []
 MP3_EXT = {".mp3"}
 AUDIO_EXT = {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".wav"}
 
-# 手机端能处理哪些源（其余交给电脑版）
+# 手机端能处理的源（其余平台走换源：拿歌名歌手去 B 站找同曲）
 SRC_LABEL = {
     "bilibili": "B站",
     "netease": "网易云",
     "direct": "直链",
+    # 下面这些手机上没解析器，统一按「换源」处理，只是显示用
+    "qq": "QQ音乐",
+    "kugou": "酷狗",
+    "ximalaya": "喜马拉雅",
+    "douyin": "抖音",
+    "kuaishou": "快手",
+    "youtube": "YouTube",
 }
 
 
@@ -212,6 +219,116 @@ def stream_download(url: str, dest: Path, job: dict, headers: dict = None,
     return dest
 
 
+# ────────────────────── 换源：VIP / 无版权的唯一出路 ──────────────────────
+# 网易云外链对 VIP 曲目返回的是 HTML 404，QQ音乐 / 酷狗 / 喜马拉雅在手机上根本没解析器。
+# 这三类都走同一条路：拿「歌名 + 歌手」去 B 站搜，**严格判定**通过才下。
+# 判不中就报失败 —— 宁可不下，也不给用户下错歌。
+
+MIN_FALLBACK_SCORE = 60.0
+MAX_DURATION_GAP = 0.10
+MIN_DURATION_TOL = 12.0
+
+
+def judge_hit(hit: dict, nt_title: str, artist_n: str, want: float):
+    """候选是不是同一首。返回 (score, reason)，score<=0 即拒绝。"""
+    t = hit.get("title") or ""
+    nt = C._norm(t)
+    d = float(hit.get("duration") or 0)
+    if not nt:
+        return 0.0, "标题为空"
+    if C.BAD_TITLE.search(t):
+        return 0.0, "翻唱/伴奏/剪辑版「%s」" % t[:32]
+    if want and d:
+        tol = max(MIN_DURATION_TOL, want * MAX_DURATION_GAP)
+        if abs(d - want) > tol:
+            return 0.0, "时长不符 %ds≠%ds「%s」" % (round(d), round(want), t[:24])
+    exact = bool(nt_title) and nt == nt_title
+    contains = bool(nt_title) and len(nt_title) >= 2 and (nt_title in nt)
+    artist_ok = bool(artist_n) and artist_n in nt
+    if not (exact or contains or artist_ok):
+        return 0.0, "名字对不上「%s」" % t[:32]
+    s = 0.0
+    if exact:
+        s += 100.0
+    elif contains:
+        s += 55.0
+    if artist_ok:
+        s += 35.0
+    if want and d:
+        s += max(0.0, 20.0 - abs(d - want) * 2.0)
+    if s < MIN_FALLBACK_SCORE:
+        return 0.0, "相关度太低(%d)「%s」" % (round(s), t[:32])
+    return s, ""
+
+
+def fallback_to_bilibili(job: dict) -> bool:
+    """用 job 里的歌名/歌手去 B 站找同曲，严格判定通过才改 job["source"]。"""
+    title = (job.get("title") or "").strip()
+    if not title:
+        job["_fb_reject"] = ["没有歌名，没法匹配"]
+        return False
+    artist = (job.get("artist") or "").replace("、", "/").replace("&", "/").split("/")[0].strip()
+    q = ("%s %s" % (title, artist)).strip()
+    want = float(job.get("duration") or 0)
+    nt_title = C._norm(title)
+    artist_n = C._norm(artist)
+    rejects = []
+
+    try:
+        C.bili_prepare()   # 不先取 cookie + mixin，搜索会直接返回空
+    except Exception as e:
+        rejects.append("B站准备失败 %s" % str(e)[:40])
+    hits = []
+    try:
+        hits = C.bilibili_search(q, 10)
+    except Exception as e:
+        rejects.append("B站搜索失败 %s" % str(e)[:40])
+
+    best, best_score, why_first = None, 0.0, ""
+    for h in hits:
+        d = h.get("duration") or 0
+        if not d or d < 20:
+            continue
+        s, why = judge_hit(h, nt_title, artist_n, want)
+        if s <= 0:
+            if why and not why_first:
+                why_first = why
+            continue
+        s += min((h.get("plays") or 0) / 1e6, 5.0)
+        if s > best_score:
+            best_score, best = s, h
+
+    if not best:
+        if why_first:
+            rejects.append("B站 " + why_first)
+        job["_fb_reject"] = rejects or ["没找到任何候选"]
+        return False
+
+    job["_fb_from"] = job.get("platform") or ""
+    job["_fb_bili_title"] = (best.get("title") or "")[:80]
+    job["source"] = best["source"]
+    job["thumb"] = job.get("thumb") or best.get("thumb") or ""
+    if not job.get("duration"):
+        job["duration"] = best.get("duration") or 0
+    return True
+
+
+def engine_fallback(job: dict) -> tuple:
+    """换源下载：匹配 → 成功后走 B 站引擎。匹配不到就抛错，绝不硬下。"""
+    _update_job(job["id"], stage="匹配可用音源", progress=0.05)
+    if not fallback_to_bilibili(job):
+        why = "；".join((job.get("_fb_reject") or [])[:2])
+        raise RuntimeError(
+            "没找到可信的同曲音源（%s）。宁可不下也不下错 —— "
+            "换个更准确的「歌手 歌名」再试" % why
+        )
+    _update_job(job["id"], stage="换源下载中", progress=0.08)
+    final, meta = engine_bilibili(job)
+    if job.get("_fb_from"):
+        meta["switched_from"] = job["_fb_from"]
+    return final, meta
+
+
 def engine_bilibili(job: dict) -> tuple:
     url, title, dur = bili_audio_url(job["source"])
     if not job.get("title") and title:
@@ -270,18 +387,28 @@ def _update_job(jid: str, **kw):
 
 def public_job(j: dict) -> dict:
     keys = ("id", "title", "artist", "status", "stage", "progress", "speed",
-            "out_size", "filename", "error", "platform", "source", "created", "finished")
+            "out_size", "filename", "error", "platform", "engine", "source",
+            "created", "finished")
     return {k: j.get(k) for k in keys}
+
+
+def pick_engine(plat: str) -> str:
+    """手机端只认三种直连来源；其余（QQ音乐/酷狗/喜马拉雅/抖音/快手…）一律换源。"""
+    if plat == "bilibili":
+        return "bilibili"
+    if plat == "netease":
+        return "netease"
+    if plat in ("direct", ""):
+        return "direct"
+    return "fallback"
 
 
 def create_job(payload: dict) -> dict:
     src = (payload.get("source") or "").strip()
     if not src:
         raise ValueError("没有链接")
-    plat = payload.get("platform") or guess_platform(src)
-    if plat not in SRC_LABEL:
-        # 手机端只认 B站 / 网易云 / 直链，其余按直链试
-        plat = "direct"
+    plat = payload.get("platform") or guess_platform(src) or "direct"
+    engine = pick_engine(plat)
     jid = "%012x" % int(time.time() * 1000 % (1 << 48))
     with _jobs_lock:
         if jid in _jobs:
@@ -292,6 +419,9 @@ def create_job(payload: dict) -> dict:
             "artist": (payload.get("artist") or "").strip(),
             "source": src,
             "platform": plat,
+            "engine": engine,
+            "duration": payload.get("duration") or 0,
+            "thumb": payload.get("thumb") or "",
             "status": "queued",
             "stage": "排队中",
             "progress": 0.0,
@@ -315,12 +445,29 @@ def run_job(jid: str):
     t0 = time.time()
     try:
         plat = job["platform"]
-        if plat == "bilibili":
+        engine = job.get("engine") or pick_engine(plat)
+        if engine == "bilibili":
             final, meta = engine_bilibili(job)
-        elif plat == "netease":
-            final, meta = engine_netease(job)
+        elif engine == "netease":
+            try:
+                final, meta = engine_netease(job)
+            except Exception as e:
+                # VIP / 无版权：外链返回的是 HTML 404，改走换源
+                _update_job(jid, stage="原链接不可用，换源中", progress=0.04,
+                            error="")
+                print("[job %s] netease 直取失败，转换源: %s" % (jid, e))
+                final, meta = engine_fallback(job)
+        elif engine == "fallback":
+            final, meta = engine_fallback(job)
         else:
-            final, meta = engine_direct(job)
+            try:
+                final, meta = engine_direct(job)
+            except Exception as e:
+                _update_job(jid, stage="直链不可用，换源中", progress=0.04, error="")
+                print("[job %s] 直链失败，转换源: %s" % (jid, e))
+                final, meta = engine_fallback(job)
+        if meta.get("switched_from"):
+            _update_job(jid, platform=(plat + "→B站") if "→" not in plat else plat)
 
         am = audio_meta(final)
         if not am.get("size"):

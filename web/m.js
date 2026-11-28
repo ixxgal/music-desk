@@ -39,13 +39,9 @@ const el = {
 };
 
 const SRC_ITEMS = [
-  ['auto', '自动 · 全部源', '同时搜 B站、网易云、喜马拉雅，按相关度混排'],
+  ['auto', '自动 · 全部源', '同时搜 B站 + 网易云，按相关度混排'],
   ['bilibili', 'B站', '原曲最全，Hi-Res 多'],
-  ['netease', '网易云', '版权曲目多为翻唱'],
-  ['ximalaya', '喜马拉雅', '有声书、播客'],
-  ['qq', 'QQ音乐', '只取元数据，下载时换源'],
-  ['kugou', '酷狗', '只取元数据，下载时换源'],
-  ['web', '网络源', '通用网页搜索'],
+  ['netease', '网易云', 'VIP 歌也能下：会自动换源到 B 站'],
 ];
 
 const SRC_NAME = Object.fromEntries(SRC_ITEMS.map(([v, n]) => [v, n]));

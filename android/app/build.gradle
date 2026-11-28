@@ -11,8 +11,8 @@ android {
         applicationId "com.ixxgal.musicdesk"
         minSdk 24
         targetSdk 34
-        versionCode 8
-        versionName "1.2.1"
+        versionCode 9
+        versionName "1.2.2"
 
         // Chaquopy 要求显式声明 ABI。只留 arm64：现在手机基本都是这个，
         // 而且 Python 运行时每多一个 ABI 就多十几 MB。

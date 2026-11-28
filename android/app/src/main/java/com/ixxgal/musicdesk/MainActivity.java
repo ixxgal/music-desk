@@ -83,7 +83,7 @@ public class MainActivity extends Activity {
         s.setUseWideViewPort(true);
         s.setSupportZoom(false);
         s.setBuiltInZoomControls(false);
-        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.1");
+        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.2");
 
         web.addJavascriptInterface(new Bridge(), "MDNative");
         web.setWebChromeClient(new WebChromeClient());
@@ -356,7 +356,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() {
-            return "1.2.1";
+            return "1.2.2";
         }
 
         /** 曲库里这个文件的完整路径（手机上就是应用私有目录）。 */
