@@ -61,6 +61,8 @@ const state = {
   downloadDir: '',
   latestVersion: '',
   hasUpdate: false,
+  apkUrl: '',
+  apkSize: 0,
 };
 
 /* ---------------- 基础工具 ---------------- */
@@ -406,18 +408,18 @@ async function checkAppUpdate(manual) {
     line.textContent = txt;
     line.className = 'set-sub' + (cls ? ' ' + cls : '');
   };
-  if (manual) setLine('正在查 GitHub…');
+  if (manual) setLine('正在查…');
   try {
-    const r = await fetch('https://api.github.com/repos/' + REPO + '/releases/latest', {
-      cache: 'no-store',
-      headers: { Accept: 'application/vnd.github+json' },
-    });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const r = await fetch('/api/app/update', { cache: 'no-store' });
     const j = await r.json();
-    const latest = String(j.tag_name || '').replace(/^v/, '');
+    if (!j.ok) throw new Error(j.error || '查询失败');
+    const latest = String(j.latest || '').replace(/^v/, '');
     state.latestVersion = latest;
-    if (cmpVer(latest, cur) > 0) {
-      setLine('有新版本 v' + latest + '，点上面「去下载」', 'ok');
+    state.apkUrl = j.apk_url || '';
+    state.apkSize = j.apk_size || 0;
+    if (j.has_update) {
+      const mb = state.apkSize ? '（' + (state.apkSize / 1048576).toFixed(1) + ' MB）' : '';
+      setLine('有新版本 v' + latest + mb + '，直接点「下载并安装」', 'ok');
       state.hasUpdate = true;
       el.hdSub.textContent = 'v' + cur + ' · 有新版本 v' + latest;
     } else {
@@ -425,7 +427,7 @@ async function checkAppUpdate(manual) {
       state.hasUpdate = false;
     }
   } catch (e) {
-    setLine(manual ? '查不到（可能没网或被墙），可点「去下载」自己看' : '当前 v' + cur, manual ? 'bad' : '');
+    setLine(manual ? ('查不到：' + (e.message || e)) : '当前 v' + cur, manual ? 'bad' : '');
   }
 }
 
@@ -462,8 +464,8 @@ function showSettingsSheet() {
       '<button class="btn ghost wide" id="setCopyPath">复制这个路径</button>' +
       (n && !storageOk
         ? '<div class="set-sub bad">这是应用私有目录，手机的文件管理器里看不到、也搜不到。' +
-          '授权后会改存到「' + esc(pubDir || '下载/音乐下载台') + '」，文件管理器和音乐 App 都能找到。</div>' +
-          '<button class="btn primary wide" id="setGrant">授权放到「下载」文件夹</button>'
+          '授权后会改存到「' + esc(pubDir || '音乐/音乐下载台') + '」，文件管理器和音乐 App 都能找到。</div>' +
+          '<button class="btn primary wide" id="setGrant">授权放到「音乐」文件夹</button>'
         : '') +
     '</div>' +
 
@@ -473,7 +475,11 @@ function showSettingsSheet() {
       '<div class="set-sub" id="setUpdLine">' + (state.hasUpdate ? '有新版本 v' + esc(state.latestVersion || '') : '') + '</div>' +
       '<div class="set-btns">' +
         '<button class="btn ghost" id="setCheck">检查更新</button>' +
-        '<button class="btn ghost" id="setGoDl">去下载</button>' +
+        (state.hasUpdate
+          ? (n
+            ? '<button class="btn primary" id="setGoDl">下载并安装</button>'
+            : '<button class="btn primary" id="setGoDl">去下载</button>')
+          : '<button class="btn ghost" id="setGoDl">下载页</button>') +
       '</div>' +
     '</div>' +
 
@@ -524,6 +530,14 @@ function showSettingsSheet() {
     click('setCheck', () => checkAppUpdate(true));
 
     click('setGoDl', () => {
+      // 应用内更新：有新版且有直链，就让系统下载器拉下来直接装
+      if (state.hasUpdate && state.apkUrl && n && n.downloadAndInstall) {
+        const name = 'MusicDesk-' + (state.latestVersion || 'new') + '.apk';
+        closeSheet();
+        toast('开始下载 v' + (state.latestVersion || '') + '…');
+        setTimeout(() => n.downloadAndInstall(state.apkUrl, name), 200);
+        return;
+      }
       if (n && n.openUrl) n.openUrl(DL_PAGE);
       else window.open(DL_PAGE, '_blank');
     });
@@ -681,6 +695,8 @@ function renderFiles() {
 }
 
 async function loadFiles() {
+  // 让系统媒体库收录新下的歌，这样「音频」分类里能直接看到
+  try { if (window.MDNative && window.MDNative.scanDownloads) window.MDNative.scanDownloads(); } catch { /* 忽略 */ }
   const r = await api('/api/files');
   if (!r.ok) return;
   state.files = r.files || [];

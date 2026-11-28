@@ -25,7 +25,7 @@ from pathlib import Path
 
 import mdphone_core as C
 
-VERSION = "1.2.5"
+VERSION = "1.2.6"
 UA = C.UA
 
 DATA_DIR = ""
@@ -40,6 +40,9 @@ MP3_EXT = {".mp3"}
 AUDIO_EXT = {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".wav"}
 
 # 手机端能处理的源（其余平台走换源：拿歌名歌手去 B 站找同曲）
+REPO = "ixxgal/music-desk"
+GH_LATEST = "https://api.github.com/repos/%s/releases/latest" % REPO
+
 SRC_LABEL = {
     "bilibili": "B站",
     "netease": "网易云",
@@ -118,6 +121,47 @@ def parse_bili_id(url: str):
 def audio_meta(p: Path) -> dict:
     """手机端不引 mutagen：只给文件名/大小，时长交给前端 <audio> 自己算。"""
     out = {"size": p.stat().st_size if p.exists() else 0}
+    return out
+
+
+def _ver_tuple(s: str) -> tuple:
+    out = []
+    for part in (s or "").lstrip("vV").split("."):
+        try:
+            out.append(int(part))
+        except ValueError:
+            out.append(0)
+    while len(out) < 3:
+        out.append(0)
+    return tuple(out[:3])
+
+
+def app_update_info() -> dict:
+    """查 GitHub 最新 Release，返回有没有新版、APK 直链。失败不抛，返回 error。"""
+    out = {"ok": False, "current": VERSION, "latest": "", "has_update": False,
+           "apk_url": "", "apk_size": 0, "notes": "", "error": ""}
+    try:
+        req = urllib.request.Request(GH_LATEST, headers={
+            "User-Agent": C.UA,
+            "Accept": "application/vnd.github+json",
+        })
+        with C.make_opener().open(req, timeout=10) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception as e:
+        out["error"] = "查不到更新信息（%s）" % e
+        return out
+
+    latest = (data.get("tag_name") or "").strip()
+    out["latest"] = latest
+    out["notes"] = (data.get("body") or "").strip()[:600]
+    for a in data.get("assets") or []:
+        name = (a.get("name") or "").lower()
+        if name.endswith(".apk"):
+            out["apk_url"] = a.get("browser_download_url") or ""
+            out["apk_size"] = int(a.get("size") or 0)
+            break
+    out["ok"] = True
+    out["has_update"] = bool(latest) and _ver_tuple(latest) > _ver_tuple(VERSION)
     return out
 
 
@@ -656,6 +700,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/net":
             return self._json({"ok": True, "host": "127.0.0.1", "port": PORT,
                                "lan_enabled": False, "mobile_url": "/m", "local_url": "/"})
+
+        if path == "/api/app/update":
+            return self._json(app_update_info())
 
         if path.startswith("/media/"):
             return self.serve_media(urllib.parse.unquote(path[len("/media/"):]))

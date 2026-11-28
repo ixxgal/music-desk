@@ -51,6 +51,8 @@ public class MainActivity extends Activity {
 
     private WebView web;
     private SharedPreferences sp;
+    private long pendingApkId = -1;
+    private android.content.BroadcastReceiver apkReceiver;
     private long lastBackAt = 0;
     private volatile String localUrl = "";
     private volatile String localError = "";
@@ -85,7 +87,7 @@ public class MainActivity extends Activity {
         s.setUseWideViewPort(true);
         s.setSupportZoom(false);
         s.setBuiltInZoomControls(false);
-        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.5");
+        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.6");
 
         web.addJavascriptInterface(new Bridge(), "MDNative");
         web.setWebChromeClient(new WebChromeClient());
@@ -121,6 +123,34 @@ public class MainActivity extends Activity {
                 }
             }
         });
+
+        apkReceiver = new android.content.BroadcastReceiver() {
+            @Override
+            public void onReceive(Context ctx, android.content.Intent it) {
+                if (!android.app.DownloadManager.ACTION_DOWNLOAD_COMPLETE.equals(it.getAction())) return;
+                long id = it.getLongExtra(android.app.DownloadManager.EXTRA_DOWNLOAD_ID, -1);
+                if (id != pendingApkId) return;
+                pendingApkId = -1;
+                try {
+                    android.app.DownloadManager dm =
+                            (android.app.DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                    Uri uri = dm.getUriForDownloadedFile(id);
+                    if (uri == null) {
+                        Toast.makeText(MainActivity.this, "下载失败，去通知栏看看", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    android.content.Intent inst = new android.content.Intent(android.content.Intent.ACTION_VIEW);
+                    inst.setDataAndType(uri, "application/vnd.android.package-archive");
+                    inst.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            | android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(inst);
+                } catch (Throwable e) {
+                    Toast.makeText(MainActivity.this, "装不了：" + e.getMessage(), Toast.LENGTH_LONG).show();
+                }
+            }
+        };
+        registerReceiver(apkReceiver, new android.content.IntentFilter(
+                android.app.DownloadManager.ACTION_DOWNLOAD_COMPLETE));
 
         String saved = sp.getString(KEY_SERVER, "");
         String mode = sp.getString(KEY_MODE, "");
@@ -160,12 +190,11 @@ public class MainActivity extends Activity {
         }, "py-boot").start();
     }
 
-    /** 第一次调用会加载整个 CPython 运行时，得几百毫秒到两秒；所以只能放在后台线程。 */
-    /** 有存储权限就用公共的「下载/音乐下载台」，文件管理器能看见；没有就退回应用私有目录。 */
+    /** 有存储权限就用公共的「音乐/音乐下载台」，系统「音频」分类和文件管理器都能看见；没有就退回私有目录。 */
     private java.io.File dataRoot() {
         if (hasStorage()) {
             java.io.File d = new java.io.File(
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC),
                     "音乐下载台");
             if (d.isDirectory() || d.mkdirs()) return d;
         }
@@ -389,7 +418,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() {
-            return "1.2.5";
+            return "1.2.6";
         }
 
         /** 用系统浏览器打开一个链接（更新下载页之类）。 */
@@ -426,7 +455,7 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public String publicDir() {
             return new java.io.File(
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC),
                     "音乐下载台/downloads").getAbsolutePath();
         }
 
@@ -454,6 +483,88 @@ public class MainActivity extends Activity {
                                     "找不到授权页面，去「设置 → 应用 → 音乐下载台 → 权限」里手动打开",
                                     Toast.LENGTH_LONG).show();
                         }
+                    }
+                }
+            });
+        }
+
+        /** 把下载目录里的文件扫进系统媒体库，这样「音频/视频」分类里能直接看到。 */
+        @JavascriptInterface
+        public void scanDownloads() {
+            final java.io.File dir = new java.io.File(dataRoot(), "downloads");
+            new Thread(new Runnable() {
+                public void run() {
+                    java.io.File[] fs = dir.listFiles();
+                    if (fs == null) return;
+                    for (java.io.File f : fs) {
+                        if (!f.isFile()) continue;
+                        String n = f.getName().toLowerCase();
+                        if (n.endsWith(".mp3") || n.endsWith(".m4a") || n.endsWith(".aac")
+                                || n.endsWith(".flac") || n.endsWith(".ogg") || n.endsWith(".wav")
+                                || n.endsWith(".mp4") || n.endsWith(".m4v") || n.endsWith(".mkv")) {
+                            MediaScannerConnection.scanFile(MainActivity.this,
+                                    new String[]{f.getAbsolutePath()}, null, null);
+                        }
+                    }
+                }
+            }, "md-scan").start();
+        }
+
+        /** 用系统下载器把新版本 APK 拉下来，下完直接弹安装。不用去浏览器。 */
+        @JavascriptInterface
+        public void downloadAndInstall(final String url, final String filename) {
+            runOnUiThread(new Runnable() {
+                public void run() {
+                    try {
+                        // Android 8+ 需要「安装未知应用」权限
+                        if (Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
+                            Toast.makeText(MainActivity.this,
+                                    "先允许「安装未知应用」，回来再点一次更新", Toast.LENGTH_LONG).show();
+                            try {
+                                startActivity(new android.content.Intent(
+                                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                        Uri.parse("package:" + getPackageName())));
+                            } catch (Throwable ignore) {}
+                            return;
+                        }
+                        android.app.DownloadManager dm =
+                                (android.app.DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                        String name = (filename == null || filename.isEmpty())
+                                ? "MusicDesk-update.apk" : filename;
+                        android.app.DownloadManager.Request req =
+                                new android.app.DownloadManager.Request(Uri.parse(url));
+                        req.setTitle("音乐下载台 新版本");
+                        req.setDescription(name);
+                        req.setMimeType("application/vnd.android.package-archive");
+                        req.setNotificationVisibility(
+                                android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                        req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name);
+                        long id = dm.enqueue(req);
+                        pendingApkId = id;
+                        Toast.makeText(MainActivity.this, "开始下载，下完会自己弹安装", Toast.LENGTH_SHORT).show();
+                    } catch (Throwable e) {
+                        Toast.makeText(MainActivity.this, "下载失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
+                    }
+                }
+            });
+        }
+
+        /** 打开系统「安装未知应用」的授权页。 */
+        @JavascriptInterface
+        public boolean canInstall() {
+            return Build.VERSION.SDK_INT < 26 || getPackageManager().canRequestPackageInstalls();
+        }
+
+        @JavascriptInterface
+        public void requestInstall() {
+            runOnUiThread(new Runnable() {
+                public void run() {
+                    try {
+                        startActivity(new android.content.Intent(
+                                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                Uri.parse("package:" + getPackageName())));
+                    } catch (Throwable e) {
+                        Toast.makeText(MainActivity.this, "打不开授权页，去设置里手动允许", Toast.LENGTH_LONG).show();
                     }
                 }
             });
