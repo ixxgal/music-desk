@@ -54,10 +54,19 @@ public class MainActivity extends Activity {
     private SharedPreferences sp;
     private long pendingApkId = -1;
     private boolean blankChecked = false;
+    private boolean blankRetried = false;
     private android.content.BroadcastReceiver apkReceiver;
     private long lastBackAt = 0;
     private volatile String localUrl = "";
     private volatile String localError = "";
+    /** bootLocal 只允许跑一次。onResume 会在 onCreate 之后立刻来一次，没有这个锁就会
+     *  起两个 py-boot 线程同时解压界面文件、同时抢端口，结果把 m.html 写成半截 ——
+     *  页面空白但 /api/ping 正常，正是 1.2.7 白屏的真正原因。 */
+    private final Object bootLock = new Object();
+    private volatile boolean booting = false;
+    /** 最近一次交给 WebView 的地址。WebView.getUrl() 在 loadDataWithBaseURL(null) 之后
+     *  仍然是 null，不能拿它判断「有没有加载过」。 */
+    private volatile String loadedUrl = "";
 
     @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
     @Override
@@ -90,7 +99,7 @@ public class MainActivity extends Activity {
         s.setUseWideViewPort(true);
         s.setSupportZoom(false);
         s.setBuiltInZoomControls(false);
-        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.8");
+        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.9");
 
         web.addJavascriptInterface(new Bridge(), "MDNative");
         web.setWebChromeClient(new WebChromeClient());
@@ -182,17 +191,27 @@ public class MainActivity extends Activity {
             }
             bootLocal();
         } else if (saved == null || saved.trim().isEmpty()) {
+            loadedUrl = SETUP_URL;
             web.loadUrl(SETUP_URL);
         } else {
+            loadedUrl = saved;
             web.loadUrl(saved);
         }
     }
 
     /** 起手机里的 Python 后端，然后把 WebView 指向它。可以在任意线程调用。 */
     private void bootLocal() {
+        synchronized (bootLock) {
+            if (booting) {
+                android.util.Log.i("MusicDesk", "bootLocal 已在跑，忽略重复调用");
+                return;
+            }
+            booting = true;
+        }
         runOnUiThread(new Runnable() {
             public void run() {
-                web.loadDataWithBaseURL(null, "<!doctype html><meta charset=utf-8>"
+                loadedUrl = "about:blank";
+                web.loadDataWithBaseURL("about:blank", "<!doctype html><meta charset=utf-8>"
                         + "<style>body{margin:0;height:100vh;display:flex;align-items:center;"
                         + "justify-content:center;background:#070a10;color:#8b93a8;"
                         + "font:15px/1.7 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}</style>"
@@ -201,21 +220,27 @@ public class MainActivity extends Activity {
         });
         new Thread(new Runnable() {
             public void run() {
-                adoptOldDownloads();          // 老版本下在公共目录的，先搬回私有目录
-                final String url = startPython();
-                if (!url.isEmpty()) {
-                    // 启动就把已有的歌补一份到系统「音乐」，用户不用点什么
-                    publishAsync(false);
-                }
-                runOnUiThread(new Runnable() {
-                    public void run() {
-                        if (url.isEmpty()) {
-                            showLocalFailed();
-                        } else {
-                            web.loadUrl(url);
-                        }
+                try {
+                    adoptOldDownloads();          // 老版本下在公共目录的，先搬回私有目录
+                    final String url = startPython();
+                    if (!url.isEmpty()) {
+                        // 启动就把已有的歌补一份到系统「音乐」，用户不用点什么
+                        publishAsync(false);
                     }
-                });
+                    runOnUiThread(new Runnable() {
+                        public void run() {
+                            if (url.isEmpty()) {
+                                loadedUrl = "about:blank";
+                                showLocalFailed();
+                            } else {
+                                loadedUrl = url;
+                                web.loadUrl(url);
+                            }
+                        }
+                    });
+                } finally {
+                    booting = false;
+                }
             }
         }, "py-boot").start();
     }
@@ -577,10 +602,11 @@ public class MainActivity extends Activity {
     private void checkBlank(WebView v, String url) {
         if (url == null || !url.contains("127.0.0.1")) return;
         if (blankChecked) return;
+        final String target = url;
         v.postDelayed(new Runnable() {
             public void run() {
                 try {
-                    v.evaluateJavascript(
+                    web.evaluateJavascript(
                             "(function(){var b=document.body;"
                                     + "return JSON.stringify({txt:b?b.innerText.trim().length:-1,"
                                     + "html:b?b.innerHTML.length:-1,"
@@ -593,14 +619,22 @@ public class MainActivity extends Activity {
                                     int htmlLen = pickInt(raw, "html");
                                     // 有字或者有结构就算正常，放过
                                     if (txt > 0 || htmlLen > 40) return;
+                                    // 第一次空：多半是加载被打断（慢机子/刚启动），自动重来一次
+                                    if (!blankRetried) {
+                                        blankRetried = true;
+                                        android.util.Log.w("MusicDesk", "页面为空，自动重载一次: " + target);
+                                        web.loadUrl(target);
+                                        checkBlank(web, target);
+                                        return;
+                                    }
                                     blankChecked = true;
-                                    showBlankDiag(v.getUrl(), txt, htmlLen, raw);
+                                    showBlankDiag(web.getUrl(), txt, htmlLen, raw);
                                 }
                             });
                 } catch (Throwable ignore) {
                 }
             }
-        }, 1400);
+        }, 1600);
     }
 
     /** 从 JSON 串里抠一个整数字段，失败返回 -1。 */
@@ -623,10 +657,18 @@ public class MainActivity extends Activity {
         // 探活要联网，不能在主线程干
         new Thread(new Runnable() {
             public void run() {
+                // 端口用页面自己那个，不写死 8899 —— 引擎换过端口时写死就查错地方了
+                String base = "http://127.0.0.1:8899";
+                try {
+                    java.net.URL u = new java.net.URL(String.valueOf(url));
+                    int p = u.getPort();
+                    base = "http://127.0.0.1:" + (p > 0 ? p : 80);
+                } catch (Throwable ignore) {
+                }
                 String ping;
                 try {
                     java.net.HttpURLConnection c = (java.net.HttpURLConnection)
-                            new java.net.URL("http://127.0.0.1:8899/api/ping").openConnection();
+                            new java.net.URL(base + "/api/ping").openConnection();
                     c.setConnectTimeout(2500);
                     c.setReadTimeout(2500);
                     ping = "HTTP " + c.getResponseCode();
@@ -635,31 +677,60 @@ public class MainActivity extends Activity {
                     ping = "异常：" + e.getClass().getSimpleName();
                 }
                 final String pingText = ping;
+                final String headText = fetchHead(base + "/m", 700);
                 runOnUiThread(new Runnable() {
                     public void run() {
-                        renderBlankDiag(url, txt, htmlLen, raw, pingText);
+                        renderBlankDiag(url, txt, htmlLen, raw, pingText, headText);
                     }
                 });
             }
         }).start();
     }
 
-    private void renderBlankDiag(String url, int txt, int htmlLen, String raw, String ping) {
+    /** 取服务端 /m 的前几百个字符 —— 一眼能看出是 404、空串，还是被写坏的半截 HTML。 */
+    private String fetchHead(String u, int chars) {
+        try {
+            java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(u).openConnection();
+            c.setConnectTimeout(2500);
+            c.setReadTimeout(2500);
+            int code = c.getResponseCode();
+            java.io.InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
+            if (in == null) {
+                c.disconnect();
+                return "HTTP " + code + " / 没有响应体";
+            }
+            byte[] b = new byte[chars * 3];
+            int got = 0, r;
+            while (got < b.length && (r = in.read(b, got, b.length - got)) > 0) got += r;
+            in.close();
+            c.disconnect();
+            String s = new String(b, 0, got, "UTF-8");
+            if (s.length() > chars) s = s.substring(0, chars) + "…";
+            return "HTTP " + code + " / " + got + " bytes\n" + s;
+        } catch (Throwable e) {
+            return "请求失败：" + e.getClass().getSimpleName() + " " + e.getMessage();
+        }
+    }
+
+    private void renderBlankDiag(String url, int txt, int htmlLen, String raw, String ping, String head) {
         String html = "<!doctype html><meta charset=utf-8>"
                 + "<meta name=viewport content='width=device-width,initial-scale=1'>"
                 + "<style>body{margin:0;min-height:100vh;display:flex;flex-direction:column;"
                 + "align-items:center;justify-content:center;gap:14px;background:#070a10;"
-                + "color:#e6e9f2;font:15px/1.7 -apple-system,'PingFang SC',sans-serif;padding:28px}"
+                + "color:#e6e9f2;font:15px/1.7 -apple-system,'PingFang SC',sans-serif;padding:24px}"
                 + "h2{font-size:18px;margin:0}p{margin:0;color:#8b93a8;font-size:13px;line-height:1.8;"
                 + "text-align:center;word-break:break-all}"
                 + "code{background:#12161f;padding:9px 12px;border-radius:8px;color:#f87171;"
-                + "font-size:11px;word-break:break-all;display:block;max-width:100%;white-space:pre-wrap}"
+                + "font-size:11px;word-break:break-all;display:block;max-width:100%;"
+                + "white-space:pre-wrap;max-height:300px;overflow:auto;text-align:left}"
                 + "button{margin-top:6px;padding:13px 30px;border:0;border-radius:12px;font-size:15px;"
                 + "font-weight:600;color:#fff;background:linear-gradient(135deg,#7c5cff,#22d3ee)}"
                 + "</style><h2>界面没画出来</h2>"
-                + "<p>本机服务：" + ping + "</p>"
+                + "<p>本机服务：<b>" + ping + "</b></p>"
                 + "<p>页面地址：<br>" + (url == null ? "" : url) + "</p>"
-                + "<code>文字长度 " + txt + " / HTML 长度 " + htmlLen + "\n" + raw.replace("<", "&lt;") + "</code>"
+                + "<p>页面里：文字 " + txt + " 字 / HTML " + htmlLen + " 字</p>"
+                + "<p style='font-size:12px;color:#6b7488'>服务器返回的 /m 开头：</p>"
+                + "<code>" + head.replace("<", "&lt;") + "</code>"
                 + "<button onclick='location.reload()'>重新加载</button>"
                 + "<button onclick='MDNative.reset()' style='background:#1b2130'>换成连接电脑</button>";
         web.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
@@ -705,12 +776,28 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        // 兜底：万一初始加载没发生，别让用户对着白屏
+        // 兜底：万一初始加载真没发生，别让用户对着白屏。
+        // 注意不能用 web.getUrl() 判断 —— loadDataWithBaseURL 之后它仍是 null，
+        // 而 onResume 紧跟在 onCreate 后面就会来一次，会造成 bootLocal 重入（1.2.7 白屏的根因）。
+        // 所以延后 2 秒、且只认 loadedUrl 这个我们自己的标志。
         try {
-            if (web != null && web.getUrl() == null) {
-                String m2 = sp.getString(KEY_MODE, "");
-                if ("local".equals(m2)) bootLocal();
-                else web.loadUrl(SETUP_URL);
+            if (web != null) {
+                web.postDelayed(new Runnable() {
+                    public void run() {
+                        try {
+                            if (loadedUrl.isEmpty() && !booting) {
+                                android.util.Log.w("MusicDesk", "加载标志为空，重来一次");
+                                String m2 = sp.getString(KEY_MODE, "");
+                                if ("local".equals(m2)) bootLocal();
+                                else {
+                                    loadedUrl = SETUP_URL;
+                                    web.loadUrl(SETUP_URL);
+                                }
+                            }
+                        } catch (Throwable ignore) {
+                        }
+                    }
+                }, 2000);
             }
         } catch (Throwable ignore) {
         }
@@ -806,6 +893,7 @@ public class MainActivity extends Activity {
                     }
                     String url = sp.getString(KEY_SERVER, "");
                     if (url == null || url.isEmpty()) return;
+                    loadedUrl = url;
                     web.loadUrl(url);
                 }
             });
@@ -816,6 +904,7 @@ public class MainActivity extends Activity {
             sp.edit().remove(KEY_SERVER).remove(KEY_MODE).apply();
             runOnUiThread(new Runnable() {
                 public void run() {
+                    loadedUrl = SETUP_URL;
                     web.loadUrl(SETUP_URL);
                 }
             });
@@ -847,7 +936,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() {
-            return "1.2.8";
+            return "1.2.9";
         }
 
         /** 用系统浏览器打开一个链接（更新下载页之类）。 */

@@ -25,7 +25,7 @@ from pathlib import Path
 
 import mdphone_core as C
 
-VERSION = "1.2.8"
+VERSION = "1.2.9"
 UA = C.UA
 
 DATA_DIR = ""
@@ -589,21 +589,32 @@ WEB_DIR = None      # type: Path
 _srv = None
 _srv_port = 0
 _srv_data = ""
+# start() 必须串行：Activity 重建、onResume 兜底、WebView 刷新可能同时进来。
+# 不加这个锁，两个线程会各自 bind 一个端口，起出两个服务，后面谁也说不清在用哪个。
+_start_lock = threading.Lock()
 
 
 def _close_server():
     global _srv
     if _srv is None:
         return
-    try:
-        _srv.shutdown()
-    except Exception:
-        pass
-    try:
-        _srv.server_close()
-    except Exception:
-        pass
+    srv = _srv
     _srv = None
+    try:
+        srv.shutdown()
+    except Exception:
+        pass
+    try:
+        srv.server_close()
+    except Exception:
+        pass
+    # server_close() 在某些 Python 版本上只等 handler 线程，listening socket 要自己再关一次
+    try:
+        sock = getattr(srv, "socket", None)
+        if sock is not None:
+            sock.close()
+    except Exception:
+        pass
 
 
 def _web(name: str) -> bytes:
@@ -865,7 +876,13 @@ b{color:#e6e9f2}a{color:#a78bfa}</style>
 
 
 def start(data_dir: str, port: int = 8899, web_dir: str = "") -> int:
-    """Java 侧调用：起服务，返回实际端口。
+    """Java 侧调用：起服务，返回实际端口。可以重复、可以并发调用。"""
+    with _start_lock:
+        return _start_locked(data_dir, port, web_dir)
+
+
+def _start_locked(data_dir: str, port: int = 8899, web_dir: str = "") -> int:
+    """start() 的真正实现，调用方必须已经持有 _start_lock。
 
     可重复调用：数据目录没变就直接返回已起的那个；变了（比如刚拿到存储权限）
     就把旧的关掉重开。端口被占会自动往后找，不会再抛 Address already in use。
