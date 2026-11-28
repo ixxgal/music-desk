@@ -25,7 +25,7 @@ from pathlib import Path
 
 import mdphone_core as C
 
-VERSION = "1.2.7"
+VERSION = "1.2.8"
 UA = C.UA
 
 DATA_DIR = ""
@@ -584,6 +584,27 @@ def search(q: str, src: str = "auto", limit: int = 20) -> list:
 PAGE_INDEX = None   # 由 Java 侧或文件提供
 WEB_DIR = None      # type: Path
 
+# 已经起过的服务器。Activity 重建、WebView 刷新都会再调一次 start()，
+# 要是每次都新开一个监听，第二次就撞 8899 报「Address already in use」。
+_srv = None
+_srv_port = 0
+_srv_data = ""
+
+
+def _close_server():
+    global _srv
+    if _srv is None:
+        return
+    try:
+        _srv.shutdown()
+    except Exception:
+        pass
+    try:
+        _srv.server_close()
+    except Exception:
+        pass
+    _srv = None
+
 
 def _web(name: str) -> bytes:
     p = (WEB_DIR / name) if WEB_DIR else None
@@ -844,9 +865,19 @@ b{color:#e6e9f2}a{color:#a78bfa}</style>
 
 
 def start(data_dir: str, port: int = 8899, web_dir: str = "") -> int:
-    """Java 侧调用：起服务，返回实际端口。"""
-    global DATA_DIR, PORT, DOWNLOADS, WEB_DIR
-    DATA_DIR = data_dir or ""
+    """Java 侧调用：起服务，返回实际端口。
+
+    可重复调用：数据目录没变就直接返回已起的那个；变了（比如刚拿到存储权限）
+    就把旧的关掉重开。端口被占会自动往后找，不会再抛 Address already in use。
+    """
+    global DATA_DIR, PORT, DOWNLOADS, WEB_DIR, _srv, _srv_port, _srv_data
+    d = data_dir or ""
+    if _srv is not None and _srv_data == d:
+        return _srv_port
+    if _srv is not None:
+        _close_server()
+
+    DATA_DIR = d
     if DATA_DIR:
         DOWNLOADS = Path(DATA_DIR) / "downloads"
         DOWNLOADS.mkdir(parents=True, exist_ok=True)
@@ -860,10 +891,31 @@ def start(data_dir: str, port: int = 8899, web_dir: str = "") -> int:
         except Exception as e:
             print("webpack extract failed:", e)
 
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    PORT = srv.server_address[1]
+    srv = None
+    last = None
+    for p in range(port, port + 15):
+        try:
+            srv = ThreadingHTTPServer(("127.0.0.1", p), Handler)
+            break
+        except OSError as e:
+            # 端口被占：Linux/Android 是 Errno 98(EADDRINUSE)，
+            # Windows 独占时是 13/10013(EACCES)。一律换下一个端口试。
+            last = e
+            continue
+    if srv is None:
+        raise RuntimeError("端口 %d-%d 全被占用（%s）" % (port, port + 14, last))
+
+    _srv = srv
+    _srv_port = srv.server_address[1]
+    _srv_data = DATA_DIR
+    PORT = _srv_port
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return PORT
+    return _srv_port
+
+
+def stop() -> None:
+    """Java 侧调用：彻底关掉服务（换数据目录或退出前用）。"""
+    _close_server()
 
 
 if __name__ == "__main__":

@@ -460,13 +460,21 @@ function showSettingsSheet() {
 
     '<div class="set-group">' +
       '<div class="set-label">下载位置</div>' +
+      '<div class="set-now"><b>' + esc(pubDir || '音乐/音乐下载台') + '</b>' +
+        '<span>' + (storageOk
+          ? '下好的歌会自动存一份到这里，手机自带的音乐 App、文件管理器的「音频」里都能看到'
+          : '暂时只能存在应用私有目录') + '</span></div>' +
+      (storageOk ? '' :
+        '<div class="set-sub bad">安卓 9 及以下要一个存储权限才能写进公共目录。' +
+          '点下面的按钮，系统会直接弹授权框。</div>' +
+        '<button class="btn primary wide" id="setGrant">允许写入存储</button>') +
+      '<div class="set-label" style="margin-top:12px">实际文件目录</div>' +
       '<div class="set-path" id="setPath">' + esc(dir) + '</div>' +
-      '<button class="btn ghost wide" id="setCopyPath">复制这个路径</button>' +
-      (n && !storageOk
-        ? '<div class="set-sub bad">这是应用私有目录，手机的文件管理器里看不到、也搜不到。' +
-          '授权后会改存到「' + esc(pubDir || '音乐/音乐下载台') + '」，文件管理器和音乐 App 都能找到。</div>' +
-          '<button class="btn primary wide" id="setGrant">授权放到「音乐」文件夹</button>'
-        : '') +
+      '<div class="set-sub">系统音乐库里那份是复制出来的，删这里的不会影响那边。</div>' +
+      '<div class="set-btns">' +
+        '<button class="btn ghost" id="setCopyPath">复制路径</button>' +
+        '<button class="btn ghost" id="setRepublish">重新存一遍</button>' +
+      '</div>' +
     '</div>' +
 
     '<div class="set-group">' +
@@ -523,8 +531,15 @@ function showSettingsSheet() {
 
     click('setGrant', () => {
       closeSheet();
-      toast('在系统设置里打开「所有文件访问权限」，回来后重开这个面板');
+      toast('系统会弹一个存储权限，点「允许」');
       setTimeout(() => { if (n.requestStorage) n.requestStorage(); }, 320);
+    });
+
+    click('setRepublish', () => {
+      closeSheet();
+      if (!n || !n.publishAll) { toast('只有装成 App 才有这个功能'); return; }
+      toast('正在往系统「音乐」里存…');
+      setTimeout(() => n.publishAll(), 200);
     });
 
     click('setCheck', () => checkAppUpdate(true));
@@ -695,8 +710,11 @@ function renderFiles() {
 }
 
 async function loadFiles() {
-  // 让系统媒体库收录新下的歌，这样「音频」分类里能直接看到
-  try { if (window.MDNative && window.MDNative.scanDownloads) window.MDNative.scanDownloads(); } catch { /* 忽略 */ }
+  // 悄悄把新下的歌补送到系统「音乐」（MediaStore，安卓 10+ 不需要权限）
+  try {
+    if (window.MDNative && window.MDNative.publishQuiet) window.MDNative.publishQuiet();
+    else if (window.MDNative && window.MDNative.scanDownloads) window.MDNative.scanDownloads();
+  } catch { /* 忽略 */ }
   const r = await api('/api/files');
   if (!r.ok) return;
   state.files = r.files || [];

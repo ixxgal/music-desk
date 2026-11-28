@@ -13,6 +13,7 @@ import android.net.NetworkInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
+import android.provider.MediaStore;
 import android.provider.Settings;
 import android.os.Bundle;
 import android.view.KeyEvent;
@@ -89,7 +90,7 @@ public class MainActivity extends Activity {
         s.setUseWideViewPort(true);
         s.setSupportZoom(false);
         s.setBuiltInZoomControls(false);
-        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.7");
+        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.8");
 
         web.addJavascriptInterface(new Bridge(), "MDNative");
         web.setWebChromeClient(new WebChromeClient());
@@ -168,6 +169,17 @@ public class MainActivity extends Activity {
         String saved = sp.getString(KEY_SERVER, "");
         String mode = sp.getString(KEY_MODE, "");
         if ("local".equals(mode)) {
+            // 安卓 9 及以下写公共目录要个存储权限，一进来就弹，别让用户自己去翻设置。
+            // 安卓 10+ 用 MediaStore，压根不需要权限，这里不会打扰。
+            if (Build.VERSION.SDK_INT < 29
+                    && checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                try {
+                    requestPermissions(new String[]{
+                            android.Manifest.permission.WRITE_EXTERNAL_STORAGE}, 1001);
+                } catch (Throwable ignore) {
+                }
+            }
             bootLocal();
         } else if (saved == null || saved.trim().isEmpty()) {
             web.loadUrl(SETUP_URL);
@@ -189,7 +201,12 @@ public class MainActivity extends Activity {
         });
         new Thread(new Runnable() {
             public void run() {
+                adoptOldDownloads();          // 老版本下在公共目录的，先搬回私有目录
                 final String url = startPython();
+                if (!url.isEmpty()) {
+                    // 启动就把已有的歌补一份到系统「音乐」，用户不用点什么
+                    publishAsync(false);
+                }
                 runOnUiThread(new Runnable() {
                     public void run() {
                         if (url.isEmpty()) {
@@ -237,24 +254,248 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 有存储权限就用公共的「音乐/音乐下载台」，系统「音频」分类和文件管理器都能看见；没有就退回私有目录。 */
+    /**
+     * 下载和曲库的工作目录，永远用应用私有目录。
+     *
+     * 私有目录写文件不需要任何权限，所以下载永远能成功；下好之后再通过
+     * publishAll() 用 MediaStore 复制一份到系统「音乐/音乐下载台」，那边安卓 10+
+     * 完全不需要授权就能写。这样就不会出现「拿不到所有文件访问权限 → 一首也存不下」。
+     */
     private java.io.File dataRoot() {
-        if (hasStorage()) {
-            java.io.File d = new java.io.File(
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC),
-                    "音乐下载台");
-            if (d.isDirectory() || d.mkdirs()) return d;
-        }
         return getFilesDir();
     }
 
-    /** 是否拿到了写入公共目录的权限。 */
+    /** 系统「音频」里那份的落地目录（仅用于展示和 API 24~28 的直写）。 */
+    private java.io.File musicDir() {
+        return new java.io.File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC),
+                "音乐下载台");
+    }
+
+    /** 这份扩展名算音频还是视频。 */
+    private static int mediaKind(String name) {
+        String n = name.toLowerCase();
+        if (n.endsWith(".mp4") || n.endsWith(".m4v") || n.endsWith(".mkv")
+                || n.endsWith(".webm") || n.endsWith(".mov")) return 2;   // 视频
+        if (n.endsWith(".mp3") || n.endsWith(".m4a") || n.endsWith(".aac")
+                || n.endsWith(".flac") || n.endsWith(".ogg") || n.endsWith(".wav")
+                || n.endsWith(".opus") || n.endsWith(".wma")) return 1;   // 音频
+        return 0;
+    }
+
+    private static String mimeOf(String name) {
+        String n = name.toLowerCase();
+        if (n.endsWith(".mp3")) return "audio/mpeg";
+        if (n.endsWith(".m4a") || n.endsWith(".aac")) return "audio/mp4";
+        if (n.endsWith(".flac")) return "audio/flac";
+        if (n.endsWith(".ogg") || n.endsWith(".opus")) return "audio/ogg";
+        if (n.endsWith(".wav")) return "audio/wav";
+        if (n.endsWith(".mp4") || n.endsWith(".m4v")) return "video/mp4";
+        if (n.endsWith(".mkv")) return "video/x-matroska";
+        if (n.endsWith(".webm")) return "video/webm";
+        if (n.endsWith(".mov")) return "video/quicktime";
+        return "application/octet-stream";
+    }
+
+    /** 是否拿到了写公共目录的权限（只有 API 24~28 才需要）。 */
     private boolean hasStorage() {
         if (Build.VERSION.SDK_INT >= 30) {
             return Environment.isExternalStorageManager();
         }
         return checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
                 == android.content.pm.PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** 这个文件是不是已经发到系统音乐库了（按 名字+大小 记，避免重复插一份）。 */
+    private boolean published(String key) {
+        return sp.getBoolean("pub_" + key, false);
+    }
+
+    private void markPublished(String key) {
+        sp.edit().putBoolean("pub_" + key, true).apply();
+    }
+
+    /**
+     * 把私有 downloads 里的文件放一份到系统「音乐/音乐下载台」。
+     *
+     * 安卓 10+ 先走 MediaStore（不需要任何权限）；万一被 ROM 拒了就退回直接写公共目录
+     * （有 MANAGE_EXTERNAL_STORAGE 时可行）。两条都不通才算失败。
+     * 只读不删：私有那份继续给曲库播放和删除用。
+     */
+    private int publishOne(java.io.File f) {
+        if (!f.isFile()) return 0;
+        String name = f.getName();
+        int kind = mediaKind(name);
+        if (kind == 0) return 0;
+        String key = name.replaceAll("[^0-9A-Za-z\\u4e00-\\u9fa5._-]", "_")
+                + "@" + f.length();
+        if (published(key)) return 0;
+
+        boolean done = false;
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                done = publishToMediaStore(f, name, kind);
+            } catch (Throwable e) {
+                android.util.Log.w("MusicDesk", "MediaStore 失败，改试直写: " + name, e);
+            }
+        }
+        if (!done) {
+            try {
+                done = publishToPublicDir(f, name);
+            } catch (Throwable e) {
+                android.util.Log.w("MusicDesk", "直写公共目录失败: " + name, e);
+            }
+        }
+        if (done) {
+            markPublished(key);
+            return 1;
+        }
+        return 0;
+    }
+
+    /** 安卓 10+ 的正路：MediaStore 插一条记录再把内容写进去，全程不需要权限。 */
+    private boolean publishToMediaStore(java.io.File f, String name, int kind)
+            throws Exception {
+        android.content.ContentResolver cr = getContentResolver();
+        boolean video = (kind == 2);
+        android.net.Uri coll = video
+                ? MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                : MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
+        String rel = video ? "Movies/音乐下载台" : "Music/音乐下载台";
+
+        // 已经有同名同大小的就不重复插一份
+        String sel = MediaStore.MediaColumns.DISPLAY_NAME + "=? AND "
+                + MediaStore.MediaColumns.SIZE + "=?";
+        try (android.database.Cursor c = cr.query(coll,
+                new String[]{MediaStore.MediaColumns._ID}, sel,
+                new String[]{name, String.valueOf(f.length())}, null)) {
+            if (c != null && c.moveToFirst()) return true;
+        }
+
+        android.content.ContentValues v = new android.content.ContentValues();
+        v.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+        v.put(MediaStore.MediaColumns.MIME_TYPE, mimeOf(name));
+        v.put(MediaStore.MediaColumns.RELATIVE_PATH, rel);
+        v.put(MediaStore.MediaColumns.IS_PENDING, 1);
+        android.net.Uri uri = cr.insert(coll, v);
+        if (uri == null) return false;
+
+        java.io.OutputStream os = cr.openOutputStream(uri);
+        if (os == null) {
+            cr.delete(uri, null, null);
+            return false;
+        }
+        long total = 0;
+        try {
+            java.io.InputStream in = new java.io.FileInputStream(f);
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                os.write(buf, 0, n);
+                total += n;
+            }
+            in.close();
+            os.flush();
+        } finally {
+            try {
+                os.close();
+            } catch (Throwable ignore) {
+            }
+        }
+        if (total <= 0) {
+            cr.delete(uri, null, null);
+            return false;
+        }
+        android.content.ContentValues fix = new android.content.ContentValues();
+        fix.put(MediaStore.MediaColumns.IS_PENDING, 0);
+        cr.update(uri, fix, null, null);
+        return true;
+    }
+
+    /** 兜底：直接往公共目录写一份（安卓 9 及以下的正路，10+ 只有授权了才走得通）。 */
+    private boolean publishToPublicDir(java.io.File f, String name) throws Exception {
+        if (!hasStorage()) return false;
+        java.io.File dir = new java.io.File(musicDir(), "downloads");
+        if (!dir.isDirectory() && !dir.mkdirs()) return false;
+        java.io.File dst = new java.io.File(dir, name);
+        if (dst.isFile() && dst.length() == f.length()) {
+            MediaScannerConnection.scanFile(this, new String[]{dst.getAbsolutePath()}, null, null);
+            return true;
+        }
+        java.io.FileOutputStream out = new java.io.FileOutputStream(dst);
+        java.io.InputStream in = new java.io.FileInputStream(f);
+        byte[] buf = new byte[65536];
+        int n;
+        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        in.close();
+        out.close();
+        MediaScannerConnection.scanFile(this, new String[]{dst.getAbsolutePath()}, null, null);
+        return true;
+    }
+
+    /** 一次把还没发过的都发出去，返回新存了几个。前端刷新曲库、任务完成时各调一次。 */
+    private int publishAllNow() {
+        java.io.File dir = new java.io.File(dataRoot(), "downloads");
+        java.io.File[] fs = dir.listFiles();
+        if (fs == null) return 0;
+        int n = 0;
+        for (java.io.File f : fs) {
+            n += publishOne(f);
+        }
+        return n;
+    }
+
+    /**
+     * 老版本（1.2.5 及以前）在有权限时会把歌直接下到公共目录，
+     * 现在统一改到私有目录，先把旧的搬回来，免得升级后曲库变空。
+     */
+    private void adoptOldDownloads() {
+        try {
+            java.io.File old = new java.io.File(musicDir(), "downloads");
+            if (!old.isDirectory()) return;
+            java.io.File[] fs = old.listFiles();
+            if (fs == null) return;
+            java.io.File dstDir = new java.io.File(dataRoot(), "downloads");
+            if (!dstDir.isDirectory() && !dstDir.mkdirs()) return;
+            for (java.io.File f : fs) {
+                if (!f.isFile()) continue;
+                java.io.File dst = new java.io.File(dstDir, f.getName());
+                if (dst.isFile() && dst.length() == f.length()) continue;
+                java.io.FileInputStream in = new java.io.FileInputStream(f);
+                java.io.FileOutputStream out = new java.io.FileOutputStream(dst);
+                byte[] buf = new byte[65536];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                in.close();
+                out.close();
+            }
+        } catch (Throwable ignore) {
+        }
+    }
+
+    /** 后台发一份到系统音乐库。toast=true 时成功了会弹一句提示。 */
+    private void publishAsync(final boolean toast) {
+        new Thread(new Runnable() {
+            public void run() {
+                int n = 0;
+                try {
+                    n = publishAllNow();
+                } catch (Throwable e) {
+                    android.util.Log.w("MusicDesk", "publish failed", e);
+                }
+                if (n > 0 && toast) {
+                    final int cnt = n;
+                    runOnUiThread(new Runnable() {
+                        public void run() {
+                            Toast.makeText(MainActivity.this,
+                                    "已存 " + cnt + " 首到「音乐/音乐下载台」，"
+                                            + "打开文件管理器的「音频」就能看到",
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    });
+                }
+            }
+        }, "md-publish").start();
     }
 
     private String startPython() {
@@ -473,20 +714,17 @@ public class MainActivity extends Activity {
             }
         } catch (Throwable ignore) {
         }
-        // 回到前台扫一遍媒体库，新下的歌立刻出现在系统「音频」里
+        // 回到前台补发一次：在别处下的、或者上次没发成功的，这次一起送去系统「音乐」
         try {
-            java.io.File dir = new java.io.File(dataRoot(), "downloads");
-            java.io.File[] fs = dir.listFiles();
-            if (fs != null) {
-                for (java.io.File f : fs) {
-                    if (!f.isFile()) continue;
-                    String n = f.getName().toLowerCase();
-                    if (n.endsWith(".mp3") || n.endsWith(".m4a") || n.endsWith(".aac")
-                            || n.endsWith(".flac") || n.endsWith(".ogg") || n.endsWith(".wav")) {
-                        MediaScannerConnection.scanFile(this, new String[]{f.getAbsolutePath()}, null, null);
+            new Thread(new Runnable() {
+                public void run() {
+                    try {
+                        int n = publishAllNow();
+                        if (n > 0) android.util.Log.i("MusicDesk", "publishAll on resume: " + n);
+                    } catch (Throwable ignore) {
                     }
                 }
-            }
+            }, "md-publish-resume").start();
         } catch (Throwable ignore) {
         }
     }
@@ -609,7 +847,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() {
-            return "1.2.7";
+            return "1.2.8";
         }
 
         /** 用系统浏览器打开一个链接（更新下载页之类）。 */
@@ -636,69 +874,63 @@ public class MainActivity extends Activity {
             return new java.io.File(dataRoot(), "downloads").getAbsolutePath();
         }
 
-        /** 现在能不能写公共的「下载」目录。 */
+        /** 现在是不是「不用授权也能存到系统音乐库」。安卓 10+ 走 MediaStore，恒为 true。 */
         @JavascriptInterface
         public boolean storageOk() {
+            if (Build.VERSION.SDK_INT >= 29) return true;
             return MainActivity.this.hasStorage();
         }
 
-        /** 授权后会落到哪里（没权限时也把目标位置告诉用户）。 */
+        /** 歌最终会出现在系统的哪个文件夹（展示用，权限无关）。 */
         @JavascriptInterface
         public String publicDir() {
-            return new java.io.File(
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC),
-                    "音乐下载台/downloads").getAbsolutePath();
+            return "音乐/音乐下载台";
         }
 
-        /** 申请「所有文件访问权限」（Android 11+）或普通存储权限（10 及以下）。 */
+        /** 安卓 9 及以下要普通存储权限；10 及以上用 MediaStore，不需要任何权限，这里直接不动。 */
         @JavascriptInterface
         public void requestStorage() {
+            if (Build.VERSION.SDK_INT >= 29) return;
             runOnUiThread(new Runnable() {
                 public void run() {
                     try {
-                        if (Build.VERSION.SDK_INT >= 30) {
-                            android.content.Intent it = new android.content.Intent(
-                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                                    Uri.parse("package:" + getPackageName()));
-                            startActivity(it);
-                        } else {
-                            requestPermissions(new String[]{
-                                    android.Manifest.permission.WRITE_EXTERNAL_STORAGE}, 1001);
-                        }
+                        requestPermissions(new String[]{
+                                android.Manifest.permission.WRITE_EXTERNAL_STORAGE}, 1001);
                     } catch (Throwable e) {
-                        try {
-                            startActivity(new android.content.Intent(
-                                    Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
-                        } catch (Throwable e2) {
-                            Toast.makeText(MainActivity.this,
-                                    "找不到授权页面，去「设置 → 应用 → 音乐下载台 → 权限」里手动打开",
-                                    Toast.LENGTH_LONG).show();
-                        }
+                        Toast.makeText(MainActivity.this,
+                                "去「设置 → 应用 → 音乐下载台 → 权限」里打开存储权限",
+                                Toast.LENGTH_LONG).show();
                     }
                 }
             });
         }
 
-        /** 把下载目录里的文件扫进系统媒体库，这样「音频/视频」分类里能直接看到。 */
+        /**
+         * 把私有目录里还没发出去的文件放一份到系统「音乐/音乐下载台」。
+         * 后台线程做，复制大文件不会卡界面；有新存进去的会弹一句提示。
+         */
+        @JavascriptInterface
+        public void publishAll() {
+            publishAsync(true);
+        }
+
+        /** 静默版本：不弹提示（刷新曲库时用）。 */
+        @JavascriptInterface
+        public void publishQuiet() {
+            publishAsync(false);
+        }
+
+        /** 兼容旧调用：现在等于 publishAll()，把下载目录里的文件补送到系统「音乐」。 */
         @JavascriptInterface
         public void scanDownloads() {
-            final java.io.File dir = new java.io.File(dataRoot(), "downloads");
             new Thread(new Runnable() {
                 public void run() {
-                    java.io.File[] fs = dir.listFiles();
-                    if (fs == null) return;
-                    for (java.io.File f : fs) {
-                        if (!f.isFile()) continue;
-                        String n = f.getName().toLowerCase();
-                        if (n.endsWith(".mp3") || n.endsWith(".m4a") || n.endsWith(".aac")
-                                || n.endsWith(".flac") || n.endsWith(".ogg") || n.endsWith(".wav")
-                                || n.endsWith(".mp4") || n.endsWith(".m4v") || n.endsWith(".mkv")) {
-                            MediaScannerConnection.scanFile(MainActivity.this,
-                                    new String[]{f.getAbsolutePath()}, null, null);
-                        }
+                    try {
+                        publishAllNow();
+                    } catch (Throwable ignore) {
                     }
                 }
-            }, "md-scan").start();
+            }, "md-publish").start();
         }
 
         /** 用系统下载器把新版本 APK 拉下来，下完直接弹安装。不用去浏览器。 */
