@@ -32,7 +32,7 @@ import zipfile
 from pathlib import Path
 
 # ⬆️ 每次发版改这里，并同步 make_release.py 里的版本号
-APP_VERSION = "1.2.9"
+APP_VERSION = "1.3.0"
 APP_NAME = "音乐下载台"
 MANIFEST_NAME = "version.json"
 

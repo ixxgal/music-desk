@@ -975,8 +975,10 @@ async function loadSettings() {
     }
   });
 
-  // PWA：注册 service worker，让「添加到主屏幕」后能全屏打开、断网也认得壳
-  if ('serviceWorker' in navigator) {
+  // PWA：只有用浏览器打开时才注册 service worker（让「添加到主屏幕」后能全屏打开）。
+  // 装成 App 时页面是本地引擎给的，SW 只会缓存出麻烦 —— 就别注册了。
+  var inApp = !!(window.MDNative && window.MDNative.getMode);
+  if ('serviceWorker' in navigator && !inApp) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
   }
 })();

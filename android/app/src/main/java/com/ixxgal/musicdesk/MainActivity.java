@@ -94,12 +94,14 @@ public class MainActivity extends Activity {
         s.setDatabaseEnabled(true);
         s.setMediaPlaybackRequiresUserGesture(false);   // 曲库里点一下就能放
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-        s.setCacheMode(WebSettings.LOAD_DEFAULT);
+        // 页面是本机引擎现给的，缓存没有任何好处，却能把「某一刻的坏状态」永久固化下来
+        // —— 用户那几次白屏就是这么来的：一旦缓存到半截 HTML，怎么 reload 都是它。
+        s.setCacheMode(WebSettings.LOAD_NO_CACHE);
         s.setLoadWithOverviewMode(true);
         s.setUseWideViewPort(true);
         s.setSupportZoom(false);
         s.setBuiltInZoomControls(false);
-        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.9");
+        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.3.0");
 
         web.addJavascriptInterface(new Bridge(), "MDNative");
         web.setWebChromeClient(new WebChromeClient());
@@ -134,6 +136,32 @@ public class MainActivity extends Activity {
                             + jsStr(localIpPrefix()) + ","
                             + jsStr(sp.getString(KEY_MODE, "")) + ")", null);
                 }
+                // 独立 App 里的页面是本地引擎提供的，Service Worker 只会添乱：
+                // 1.2.9 之前它把 /m 也缓存了，一缓存到半截 HTML 就永远打不开。
+                // 这里每次进本机页面都注销掉所有 SW + 清空 CacheStorage，一劳永逸。
+                if (url != null && url.contains("127.0.0.1")) {
+                    sweepServiceWorker(v);
+                }
+            }
+
+            @Override
+            public boolean onRenderProcessGone(WebView v, android.webkit.RenderProcessGoneDetail d) {
+                // 渲染进程挂了：WebView 会变成一片白，evaluateJavascript 全部返回 null ——
+                // 这正是用户那几张诊断页里「文字 -1 / HTML -1」的样子。
+                boolean crashed = d != null && d.didCrash();
+                android.util.Log.e("MusicDesk", "渲染进程没了 crashed=" + crashed);
+                try {
+                    java.io.File f = new java.io.File(getFilesDir(), "crash.txt");
+                    java.io.FileWriter w = new java.io.FileWriter(f, false);
+                    w.write(new java.util.Date().toString() + "\n");
+                    w.write("WebView 渲染进程退出（didCrash=" + crashed + "）\n");
+                    w.write(buildInfo());
+                    w.close();
+                } catch (Throwable ignore) {
+                }
+                // 返回 true 表示自己处理掉，别让系统把整个 App 杀掉
+                showRenderGone(crashed);
+                return true;
             }
         });
 
@@ -234,6 +262,10 @@ public class MainActivity extends Activity {
                                 showLocalFailed();
                             } else {
                                 loadedUrl = url;
+                                // 先把之前留下的 HTTP 缓存和 Service Worker 清掉再进页面 ——
+                                // 用户那几次白屏就是缓存里躺着一份坏 HTML 造成的
+                                web.clearCache(true);
+                                sweepServiceWorker(web);
                                 web.loadUrl(url);
                             }
                         }
@@ -533,13 +565,65 @@ public class MainActivity extends Activity {
             int port = py.getModule("mdphone")
                     .callAttr("start", dataRoot().getAbsolutePath(), 8899)
                     .toInt();
-            localUrl = "http://127.0.0.1:" + port + "/m";
+            // 带一个每次都变的参数：万一手机上还留着旧 Service Worker（它在 1.2.9 之前
+            // 把 /m 也缓存了，一缓存到半截 HTML 就再也进不来），带 ?t= 的导航一定绕过缓存。
+            localUrl = "http://127.0.0.1:" + port + "/m?t=" + System.currentTimeMillis();
             localError = "";
             return localUrl;
         } catch (Throwable e) {
             localError = e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage());
             return "";
         }
+    }
+
+    /** 设备 + WebView 版本，写进 crash.txt 方便定位。 */
+    private String buildInfo() {
+        String wv = "";
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                android.content.pm.PackageInfo pi =
+                        android.webkit.WebView.getCurrentWebViewPackage();
+                if (pi != null) wv = " webview=" + pi.packageName + "/" + pi.versionName;
+            }
+        } catch (Throwable ignore) {
+        }
+        return "app=1.3.0 sdk=" + android.os.Build.VERSION.SDK_INT
+                + " device=" + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL
+                + wv + "\n";
+    }
+
+    /** 渲染进程退出后的兜底页：告诉用户点一下就能重开，而不是干瞪一片白。 */
+    private void showRenderGone(final boolean crashed) {
+        runOnUiThread(new Runnable() {
+            public void run() {
+                String html = "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+                        + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+                        + "<style>body{margin:0;min-height:100vh;display:flex;align-items:center;"
+                        + "justify-content:center;background:#070a10;color:#e6ebf5;"
+                        + "font:15px/1.75 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}"
+                        + ".w{padding:28px;max-width:420px;text-align:center}"
+                        + "h1{font-size:19px;margin:0 0 10px}"
+                        + "p{color:#8b93a8;font-size:13.5px;margin:0 0 8px}"
+                        + "code{color:#8b93a8;font-size:11.5px;display:block;margin:12px 0;"
+                        + "word-break:break-all;opacity:.7}"
+                        + "button{margin-top:18px;width:100%;height:46px;border:0;border-radius:12px;"
+                        + "background:linear-gradient(135deg,#6b5bff,#38bdf8);color:#fff;font-size:15.5px}"
+                        + "</style></head><body><div class=\"w\">"
+                        + "<h1>界面渲染进程退出了</h1>"
+                        + "<p>安卓的 WebView 渲染进程被系统回收了"
+                        + (crashed ? "（它自己崩了）" : "（内存不足被清理）") + "，所以界面是一片白。</p>"
+                        + "<p>歌、设置、登录态都没丢，点下面重开一次就好。</p>"
+                        + "<code>" + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL
+                        + " · sdk " + android.os.Build.VERSION.SDK_INT + "</code>"
+                        + "<button onclick=\"try{MDNative.reopen()}catch(e){location.reload()}\">"
+                        + "重开界面</button>"
+                        + "</div></body></html>";
+                try {
+                    web.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
+                } catch (Throwable ignore) {
+                }
+            }
+        });
     }
 
     private void showLocalFailed() {
@@ -598,6 +682,27 @@ public class MainActivity extends Activity {
         web.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
     }
 
+    /**
+     * 注销所有 Service Worker + 清空 CacheStorage。
+     *
+     * 独立模式下的页面是本地引擎给的，离线缓存没有任何好处；而 1.2.9 之前的 sw.js
+     * 把 '/m' 也放进 SHELL，只要某次缓存到半截 HTML，之后每次打开都拿到那份坏页面
+     * （document.body 直接是 null），连 reload 都救不回来。这里每次进本机页面清一遍。
+     */
+    private void sweepServiceWorker(WebView v) {
+        try {
+            v.evaluateJavascript(
+                    "(function(){try{"
+                            + "if(navigator.serviceWorker&&navigator.serviceWorker.getRegistrations){"
+                            + "navigator.serviceWorker.getRegistrations().then(function(rs){"
+                            + "rs.forEach(function(r){r.unregister()})})}"
+                            + "if(window.caches&&caches.keys){caches.keys().then(function(ks){"
+                            + "ks.forEach(function(k){caches.delete(k)})})}"
+                            + "}catch(e){}})()", null);
+        } catch (Throwable ignore) {
+        }
+    }
+
     /** 本机引擎页面加载完仍是空的，就把「为什么空」摆给用户看，而不是留一片白。 */
     private void checkBlank(WebView v, String url) {
         if (url == null || !url.contains("127.0.0.1")) return;
@@ -605,36 +710,80 @@ public class MainActivity extends Activity {
         final String target = url;
         v.postDelayed(new Runnable() {
             public void run() {
-                try {
-                    web.evaluateJavascript(
-                            "(function(){var b=document.body;"
-                                    + "return JSON.stringify({txt:b?b.innerText.trim().length:-1,"
-                                    + "html:b?b.innerHTML.length:-1,"
-                                    + "title:document.title||''});})()",
-                            new android.webkit.ValueCallback<String>() {
-                                public void onReceiveValue(String value) {
-                                    if (blankChecked) return;
-                                    String raw = value == null ? "" : value;
-                                    int txt = pickInt(raw, "txt");
-                                    int htmlLen = pickInt(raw, "html");
-                                    // 有字或者有结构就算正常，放过
-                                    if (txt > 0 || htmlLen > 40) return;
-                                    // 第一次空：多半是加载被打断（慢机子/刚启动），自动重来一次
-                                    if (!blankRetried) {
-                                        blankRetried = true;
-                                        android.util.Log.w("MusicDesk", "页面为空，自动重载一次: " + target);
-                                        web.loadUrl(target);
-                                        checkBlank(web, target);
-                                        return;
-                                    }
-                                    blankChecked = true;
-                                    showBlankDiag(web.getUrl(), txt, htmlLen, raw);
-                                }
-                            });
-                } catch (Throwable ignore) {
-                }
+                probeOnce(target, 0);
             }
         }, 1600);
+    }
+
+    /**
+     * 探一次页面里到底有没有东西。
+     *
+     * 有个坑：`evaluateJavascript` 在文档还没 commit、或者调用时正在导航，会直接回调
+     * `null` —— 那不是「页面是空的」，是「这次没问到」。上一版把 null 当成空，
+     * 于是刚进 App 就弹诊断页，反而掩盖了真正能加载出来的页面。所以这里分开处理：
+     * 问到 null 就隔一会儿再问，连着问不到才认定 JS 不可用。
+     */
+    private void probeOnce(final String target, final int attempt) {
+        if (blankChecked) return;
+        try {
+            web.evaluateJavascript(
+                    "(function(){var b=document.body;"
+                            + "return JSON.stringify({txt:b?b.innerText.trim().length:-1,"
+                            + "html:b?b.innerHTML.length:-1,"
+                            + "title:document.title||''});})()",
+                    new android.webkit.ValueCallback<String>() {
+                        public void onReceiveValue(String value) {
+                            if (blankChecked) return;
+                            if (value == null || "null".equals(value.trim())) {
+                                // 这一次没问到（文档还没 commit / 导航被打断），再等等
+                                if (attempt < 6) {
+                                    web.postDelayed(new Runnable() {
+                                        public void run() {
+                                            probeOnce(target, attempt + 1);
+                                        }
+                                    }, 700);
+                                } else if (!blankRetried) {
+                                    // 连问 6 次都问不到 —— 文档压根没建起来。
+                                    // 清干净、换个地址重来一次，再不行才认输。
+                                    blankRetried = true;
+                                    android.util.Log.w("MusicDesk", "连问 6 次都拿不到页面状态，重载: " + target);
+                                    sweepServiceWorker(web);
+                                    web.clearCache(true);
+                                    String bust = target + (target.contains("?") ? "&" : "?")
+                                            + "r=" + System.currentTimeMillis();
+                                    web.loadUrl(bust);
+                                    checkBlank(web, bust);
+                                } else {
+                                    blankChecked = true;
+                                    android.util.Log.w("MusicDesk", "重载后依然拿不到页面状态: " + target);
+                                    showBlankDiag(target, -1, -1, "evaluateJavascript 一直是 null");
+                                }
+                                return;
+                            }
+                            String raw = value;
+                            int txt = pickInt(raw, "txt");
+                            int htmlLen = pickInt(raw, "html");
+                            // 有字或者有结构就算正常，放过
+                            if (txt > 0 || htmlLen > 40) return;
+                            // 第一次空：多半是加载被打断、或者命中了旧的缓存，
+                            // 先清缓存再用带新参数的地址重来一次
+                            if (!blankRetried) {
+                                blankRetried = true;
+                                android.util.Log.w("MusicDesk", "页面为空，清缓存后重载: " + target);
+                                sweepServiceWorker(web);
+                                web.clearCache(true);
+                                String bust = target + (target.contains("?") ? "&" : "?")
+                                        + "r=" + System.currentTimeMillis();
+                                web.loadUrl(bust);
+                                checkBlank(web, bust);
+                                return;
+                            }
+                            blankChecked = true;
+                            showBlankDiag(target, txt, htmlLen, raw);
+                        }
+                    });
+        } catch (Throwable ignore) {
+        }
     }
 
     /** 从 JSON 串里抠一个整数字段，失败返回 -1。 */
@@ -936,7 +1085,17 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() {
-            return "1.2.9";
+            return "1.3.0";
+        }
+
+        /** 把整个界面重建一遍（渲染进程崩了之后的「重开界面」用）。 */
+        @JavascriptInterface
+        public void reopen() {
+            runOnUiThread(new Runnable() {
+                public void run() {
+                    recreate();
+                }
+            });
         }
 
         /** 用系统浏览器打开一个链接（更新下载页之类）。 */
