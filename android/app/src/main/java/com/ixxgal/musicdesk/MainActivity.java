@@ -7,6 +7,7 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Color;
+import android.media.MediaScannerConnection;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.net.Uri;
@@ -82,7 +83,7 @@ public class MainActivity extends Activity {
         s.setUseWideViewPort(true);
         s.setSupportZoom(false);
         s.setBuiltInZoomControls(false);
-        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.0");
+        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.1");
 
         web.addJavascriptInterface(new Bridge(), "MDNative");
         web.setWebChromeClient(new WebChromeClient());
@@ -130,13 +131,17 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 起手机里的 Python 后端，然后把 WebView 指向它。 */
+    /** 起手机里的 Python 后端，然后把 WebView 指向它。可以在任意线程调用。 */
     private void bootLocal() {
-        web.loadDataWithBaseURL(null, "<!doctype html><meta charset=utf-8>"
-                + "<style>body{margin:0;height:100vh;display:flex;align-items:center;"
-                + "justify-content:center;background:#070a10;color:#8b93a8;"
-                + "font:15px/1.7 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}</style>"
-                + "<div>正在启动本机引擎…</div>", "text/html", "utf-8", null);
+        runOnUiThread(new Runnable() {
+            public void run() {
+                web.loadDataWithBaseURL(null, "<!doctype html><meta charset=utf-8>"
+                        + "<style>body{margin:0;height:100vh;display:flex;align-items:center;"
+                        + "justify-content:center;background:#070a10;color:#8b93a8;"
+                        + "font:15px/1.7 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}</style>"
+                        + "<div>正在启动本机引擎…</div>", "text/html", "utf-8", null);
+            }
+        });
         new Thread(new Runnable() {
             public void run() {
                 final String url = startPython();
@@ -300,15 +305,16 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void openApp() {
-            final String mode = sp.getString(KEY_MODE, "");
-            if ("local".equals(mode)) {
-                bootLocal();
-                return;
-            }
-            final String url = sp.getString(KEY_SERVER, "");
-            if (url == null || url.isEmpty()) return;
+            // 注意：这里跑在 WebView 的 JS 线程，碰 WebView 必须切回 UI 线程。
             runOnUiThread(new Runnable() {
                 public void run() {
+                    String mode = sp.getString(KEY_MODE, "");
+                    if ("local".equals(mode)) {
+                        bootLocal();
+                        return;
+                    }
+                    String url = sp.getString(KEY_SERVER, "");
+                    if (url == null || url.isEmpty()) return;
                     web.loadUrl(url);
                 }
             });
@@ -350,7 +356,59 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() {
-            return "1.2.0";
+            return "1.2.1";
+        }
+
+        /** 曲库里这个文件的完整路径（手机上就是应用私有目录）。 */
+        @JavascriptInterface
+        public String filePath(String name) {
+            java.io.File f = new java.io.File(new java.io.File(getFilesDir(), "downloads"), safeName(name));
+            return f.getAbsolutePath();
+        }
+
+        /**
+         * 用系统里的播放器打开这个文件。
+         * 应用私有目录不能直接给外部 http/file URI（Android 7+ 会拦），
+         * 所以先让媒体库扫一遍，拿到 content:// 再交给系统。
+         */
+        @JavascriptInterface
+        public void openFile(final String name) {
+            final java.io.File f = new java.io.File(new java.io.File(getFilesDir(), "downloads"), safeName(name));
+            if (!f.isFile()) {
+                toast("文件不在了");
+                return;
+            }
+            MediaScannerConnection.scanFile(
+                    MainActivity.this,
+                    new String[]{f.getAbsolutePath()},
+                    null,
+                    new MediaScannerConnection.OnScanCompletedListener() {
+                        public void onScanCompleted(String path, android.net.Uri uri) {
+                            if (uri == null) {
+                                toast("系统没认出这个文件，路径：" + f.getAbsolutePath());
+                                return;
+                            }
+                            String lower = name.toLowerCase();
+                            String mime = lower.endsWith(".mp4") || lower.endsWith(".m4v")
+                                    ? "video/*" : "audio/*";
+                            android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_VIEW);
+                            i.setDataAndType(uri, mime);
+                            i.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                    | android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                            try {
+                                startActivity(i);
+                            } catch (Exception e) {
+                                toast("这台手机上没找到能打开它的应用");
+                            }
+                        }
+                    });
+        }
+
+        /** 只允许纯文件名，防 ../ 越界。 */
+        private String safeName(String name) {
+            if (name == null) return "";
+            int i = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
+            return i >= 0 ? name.substring(i + 1) : name;
         }
     }
 }

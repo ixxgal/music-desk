@@ -9,7 +9,8 @@ const el = {
   hdSub: $('#hdSub'),
   btnRefresh: $('#btnRefresh'),
   q: $('#q'),
-  src: $('#src'),
+  btnSrc: $('#btnSrc'),
+  srcNow: $('#srcNow'),
   btnGo: $('#btnGo'),
   btnPaste: $('#btnPaste'),
   hint: $('#hint'),
@@ -31,10 +32,27 @@ const el = {
   btnStop: $('#btnStop'),
   tabbar: $('#tabbar'),
   toast: $('#toast'),
+  sheet: $('#sheet'),
+  sheetMask: $('#sheetMask'),
+  sheetTitle: $('#sheetTitle'),
+  sheetBody: $('#sheetBody'),
 };
+
+const SRC_ITEMS = [
+  ['auto', '自动 · 全部源', '同时搜 B站、网易云、喜马拉雅，按相关度混排'],
+  ['bilibili', 'B站', '原曲最全，Hi-Res 多'],
+  ['netease', '网易云', '版权曲目多为翻唱'],
+  ['ximalaya', '喜马拉雅', '有声书、播客'],
+  ['qq', 'QQ音乐', '只取元数据，下载时换源'],
+  ['kugou', '酷狗', '只取元数据，下载时换源'],
+  ['web', '网络源', '通用网页搜索'],
+];
+
+const SRC_NAME = Object.fromEntries(SRC_ITEMS.map(([v, n]) => [v, n]));
 
 const state = {
   tab: 'dl',
+  src: 'auto',
   jobs: [],
   files: [],
   hist: [],
@@ -160,7 +178,7 @@ async function search(q) {
   el.results.innerHTML = '<div class="empty">正在搜…</div>';
   el.hint.className = 'hint';
   try {
-    const r = await api('/api/search?q=' + encodeURIComponent(q) + '&src=' + encodeURIComponent(el.src.value) + '&limit=24');
+    const r = await api('/api/search?q=' + encodeURIComponent(q) + '&src=' + encodeURIComponent(state.src) + '&limit=24');
     if (!r.ok) { el.results.innerHTML = '<div class="empty">' + esc(r.error || '搜索失败') + '</div>'; return; }
     if (r.notice) {
       el.results.innerHTML = '<div class="empty">' + esc(r.notice) + '</div>';
@@ -172,7 +190,7 @@ async function search(q) {
       return;
     }
     state.mode = 'results';
-    renderResults(items, r.src || el.src.value);
+    renderResults(items, r.src || state.src);
   } catch (e) {
     el.results.innerHTML = '<div class="empty">' + esc(e.message || '网络出错') + '</div>';
   } finally {
@@ -350,6 +368,86 @@ function isVideo(f) {
   return f.kind === 'video' || /\.(mp4|m4v|mov|webm|mkv)$/i.test(f.name || '');
 }
 
+/* ---------------- 底部弹层（代替原生 select / alert） ---------------- */
+let sheetOnClose = null;
+
+function openSheet(title, html, onMount) {
+  el.sheetTitle.textContent = title;
+  el.sheetBody.innerHTML = html;
+  el.sheet.classList.remove('hidden');
+  // 让动画生效
+  requestAnimationFrame(() => el.sheet.classList.add('on'));
+  if (onMount) onMount();
+}
+
+function closeSheet() {
+  el.sheet.classList.remove('on');
+  setTimeout(() => {
+    el.sheet.classList.add('hidden');
+    el.sheetBody.innerHTML = '';
+    if (sheetOnClose) { const f = sheetOnClose; sheetOnClose = null; f(); }
+  }, 190);
+}
+
+function bindSheetOnce() {
+  el.sheetMask.addEventListener('click', closeSheet);
+}
+
+function showSrcSheet() {
+  const rows = SRC_ITEMS.map(([v, name, desc]) =>
+    '<button class="sheet-row' + (state.src === v ? ' on' : '') + '" data-src="' + v + '">' +
+      '<span class="sr-main"><span class="sr-name">' + esc(name) + '</span>' +
+      '<span class="sr-desc">' + esc(desc) + '</span></span>' +
+      (state.src === v
+        ? '<svg class="sr-tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l5 5L19 7"/></svg>'
+        : '') +
+    '</button>').join('');
+  openSheet('搜索源', rows, () => {
+    $$('.sheet-row[data-src]', el.sheetBody).forEach(b => {
+      b.onclick = () => {
+        state.src = b.dataset.src;
+        el.srcNow.textContent = SRC_NAME[state.src] || '自动 · 全部源';
+        closeSheet();
+      };
+    });
+  });
+}
+
+/** 文件信息：完整路径 + 用系统播放器打开 */
+function showFileSheet(f) {
+  const name = f.name || '';
+  const isApp = window.MDNative && window.MDNative.filePath;
+  const path = isApp ? window.MDNative.filePath(name) : '（浏览器模式，文件在电脑上）';
+  const meta = [
+    isVideo(f) ? '视频' : '音频',
+    f.duration ? fmtDur(f.duration) : '',
+    human(f.size),
+  ].filter(Boolean).join(' · ');
+
+  const html =
+    '<div class="sf-name">' + esc(name.replace(/\.[^.]+$/, '')) + '</div>' +
+    '<div class="sf-meta">' + esc(meta) + '</div>' +
+    '<div class="sf-path-label">文件位置</div>' +
+    '<div class="sf-path" id="sfPath">' + esc(path) + '</div>' +
+    '<div class="sf-acts">' +
+      (isApp ? '<button class="btn primary wide" id="sfOpen">用其他应用打开</button>' : '') +
+      '<button class="btn ghost wide" id="sfCopy">复制路径</button>' +
+    '</div>';
+
+  openSheet('文件', html, () => {
+    const open = $('#sfOpen');
+    if (open) open.onclick = () => { closeSheet(); window.MDNative.openFile(name); };
+    $('#sfCopy').onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(path);
+        toast('路径已复制');
+      } catch {
+        toast('复制不了，长按上面的路径手选');
+      }
+    };
+  });
+}
+
 function renderFiles() {
   const kw = el.libFilter.value.trim().toLowerCase();
   const files = (state.files || []).filter(f => !kw || (f.name || '').toLowerCase().includes(kw));
@@ -383,6 +481,9 @@ function renderFiles() {
         '<div class="tk-name">' + esc((f.name || '').replace(/\.[^.]+$/, '')) + '</div>' +
         '<div class="tk-meta">' + esc(meta) + '</div>' +
       '</div>' +
+      '<button class="tk-loc" aria-label="文件位置">' +
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A1.5 1.5 0 014.5 6h4l2 2.5h7A1.5 1.5 0 0119 10v7.5a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 013 17.5z"/></svg>' +
+      '</button>' +
       '<button class="tk-del" aria-label="删除">' +
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h16M9 7V4.8h6V7M6.5 7l.9 13.2h9.2L17.5 7"/></svg>' +
       '</button>';
@@ -391,6 +492,8 @@ function renderFiles() {
       if (state.playingName === f.name) stopPlay();
       else playFile(f.name, (f.name || '').replace(/\.[^.]+$/, ''), '');
     };
+
+    row.querySelector('.tk-loc').onclick = () => showFileSheet(f);
 
     row.querySelector('.tk-del').onclick = async () => {
       if (!confirm('删除「' + (f.name || '') + '」？')) return;
@@ -618,6 +721,9 @@ async function ping() {
 }
 
 (async function boot() {
+  bindSheetOnce();
+  el.btnSrc.addEventListener('click', showSrcSheet);
+
   await ping();
   await loadJobs();
   await loadHist();

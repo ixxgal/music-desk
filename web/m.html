@@ -39,15 +39,10 @@
     <div class="card">
       <textarea id="q" rows="2" placeholder="粘贴链接（B站 / 网易云 / QQ音乐 / 抖音 / 快手…），或输入「歌手 歌名」"></textarea>
       <div class="row">
-        <select id="src">
-          <option value="auto" selected>自动 · 全部源</option>
-          <option value="bilibili">B站</option>
-          <option value="netease">网易云</option>
-          <option value="ximalaya">喜马拉雅</option>
-          <option value="qq">QQ音乐</option>
-          <option value="kugou">酷狗</option>
-          <option value="web">网络源</option>
-        </select>
+        <button class="src-btn" id="btnSrc" type="button">
+          <span id="srcNow">自动 · 全部源</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
         <button class="btn primary" id="btnGo">开始</button>
       </div>
       <button class="btn ghost wide" id="btnPaste">
@@ -128,6 +123,16 @@
 </nav>
 
 <div class="toast" id="toast"></div>
+
+<!-- 底部弹层：选搜索源 / 看文件位置，都用它，避免原生控件跳出另一套配色 -->
+<div class="sheet hidden" id="sheet">
+  <div class="sheet-mask" id="sheetMask"></div>
+  <div class="sheet-card">
+    <div class="sheet-grip"></div>
+    <div class="sheet-title" id="sheetTitle">搜索源</div>
+    <div class="sheet-body" id="sheetBody"></div>
+  </div>
+</div>
 
 <script src="/static/m.js"></script>
 </body>
