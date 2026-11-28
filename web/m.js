@@ -432,7 +432,16 @@ async function checkAppUpdate(manual) {
 function showSettingsSheet() {
   const m = modeText();
   const n = native();
-  const dir = state.downloadDir || '（未取到）';
+  // 每次打开都实时问一次：用户可能刚从系统设置授权回来
+  let dir = state.downloadDir || '（未取到）';
+  let storageOk = true;
+  let pubDir = '';
+  if (n && n.downloadDir) {
+    try { dir = n.downloadDir() || dir; } catch { /* 忽略 */ }
+    try { storageOk = n.storageOk ? !!n.storageOk() : true; } catch { storageOk = true; }
+    try { pubDir = n.publicDir ? n.publicDir() : ''; } catch { pubDir = ''; }
+  }
+  state.downloadDir = dir;
   const cur = state.appVersion || '?';
 
   const html =
@@ -451,6 +460,11 @@ function showSettingsSheet() {
       '<div class="set-label">下载位置</div>' +
       '<div class="set-path" id="setPath">' + esc(dir) + '</div>' +
       '<button class="btn ghost wide" id="setCopyPath">复制这个路径</button>' +
+      (n && !storageOk
+        ? '<div class="set-sub bad">这是应用私有目录，手机的文件管理器里看不到、也搜不到。' +
+          '授权后会改存到「' + esc(pubDir || '下载/音乐下载台') + '」，文件管理器和音乐 App 都能找到。</div>' +
+          '<button class="btn primary wide" id="setGrant">授权放到「下载」文件夹</button>'
+        : '') +
     '</div>' +
 
     '<div class="set-group">' +
@@ -499,6 +513,12 @@ function showSettingsSheet() {
       } catch {
         toast('复制不了，长按上面的路径手选');
       }
+    });
+
+    click('setGrant', () => {
+      closeSheet();
+      toast('在系统设置里打开「所有文件访问权限」，回来后重开这个面板');
+      setTimeout(() => { if (n.requestStorage) n.requestStorage(); }, 320);
     });
 
     click('setCheck', () => checkAppUpdate(true));
@@ -903,6 +923,23 @@ async function loadSettings() {
 
   // 静默查一次新版：查不到就算了，不打扰
   setTimeout(() => checkAppUpdate(false), 2500);
+
+  // 从系统设置授权回来：如果下载目录变了，重启本机引擎让新目录生效
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    const n = native();
+    if (!n || !n.downloadDir) return;
+    let d = '';
+    try { d = n.downloadDir() || ''; } catch { return; }
+    if (!d) return;
+    if (state.downloadDir && d !== state.downloadDir) {
+      state.downloadDir = d;
+      toast('下载位置已更新，正在重启引擎…');
+      setTimeout(() => { if (n.restartLocal) n.restartLocal(); else location.reload(); }, 700);
+    } else {
+      state.downloadDir = d;
+    }
+  });
 
   // PWA：注册 service worker，让「添加到主屏幕」后能全屏打开、断网也认得壳
   if ('serviceWorker' in navigator) {

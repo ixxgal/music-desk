@@ -25,7 +25,7 @@ from pathlib import Path
 
 import mdphone_core as C
 
-VERSION = "1.2.4"
+VERSION = "1.2.5"
 UA = C.UA
 
 DATA_DIR = ""

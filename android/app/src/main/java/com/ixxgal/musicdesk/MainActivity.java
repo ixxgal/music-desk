@@ -12,6 +12,8 @@ import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Environment;
+import android.provider.Settings;
 import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.View;
@@ -83,7 +85,7 @@ public class MainActivity extends Activity {
         s.setUseWideViewPort(true);
         s.setSupportZoom(false);
         s.setBuiltInZoomControls(false);
-        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.4");
+        s.setUserAgentString(s.getUserAgentString() + " MusicDeskApp/1.2.5");
 
         web.addJavascriptInterface(new Bridge(), "MDNative");
         web.setWebChromeClient(new WebChromeClient());
@@ -159,6 +161,26 @@ public class MainActivity extends Activity {
     }
 
     /** 第一次调用会加载整个 CPython 运行时，得几百毫秒到两秒；所以只能放在后台线程。 */
+    /** 有存储权限就用公共的「下载/音乐下载台」，文件管理器能看见；没有就退回应用私有目录。 */
+    private java.io.File dataRoot() {
+        if (hasStorage()) {
+            java.io.File d = new java.io.File(
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                    "音乐下载台");
+            if (d.isDirectory() || d.mkdirs()) return d;
+        }
+        return getFilesDir();
+    }
+
+    /** 是否拿到了写入公共目录的权限。 */
+    private boolean hasStorage() {
+        if (Build.VERSION.SDK_INT >= 30) {
+            return Environment.isExternalStorageManager();
+        }
+        return checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED;
+    }
+
     private String startPython() {
         if (!localUrl.isEmpty()) return localUrl;
         try {
@@ -167,7 +189,7 @@ public class MainActivity extends Activity {
             }
             Python py = Python.getInstance();
             int port = py.getModule("mdphone")
-                    .callAttr("start", getFilesDir().getAbsolutePath(), 8899)
+                    .callAttr("start", dataRoot().getAbsolutePath(), 8899)
                     .toInt();
             localUrl = "http://127.0.0.1:" + port + "/m";
             localError = "";
@@ -367,7 +389,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() {
-            return "1.2.4";
+            return "1.2.5";
         }
 
         /** 用系统浏览器打开一个链接（更新下载页之类）。 */
@@ -391,13 +413,67 @@ public class MainActivity extends Activity {
         /** 下载目录的绝对路径，给设置面板显示用。 */
         @JavascriptInterface
         public String downloadDir() {
-            return new java.io.File(getFilesDir(), "downloads").getAbsolutePath();
+            return new java.io.File(dataRoot(), "downloads").getAbsolutePath();
+        }
+
+        /** 现在能不能写公共的「下载」目录。 */
+        @JavascriptInterface
+        public boolean storageOk() {
+            return MainActivity.this.hasStorage();
+        }
+
+        /** 授权后会落到哪里（没权限时也把目标位置告诉用户）。 */
+        @JavascriptInterface
+        public String publicDir() {
+            return new java.io.File(
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                    "音乐下载台/downloads").getAbsolutePath();
+        }
+
+        /** 申请「所有文件访问权限」（Android 11+）或普通存储权限（10 及以下）。 */
+        @JavascriptInterface
+        public void requestStorage() {
+            runOnUiThread(new Runnable() {
+                public void run() {
+                    try {
+                        if (Build.VERSION.SDK_INT >= 30) {
+                            android.content.Intent it = new android.content.Intent(
+                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                    Uri.parse("package:" + getPackageName()));
+                            startActivity(it);
+                        } else {
+                            requestPermissions(new String[]{
+                                    android.Manifest.permission.WRITE_EXTERNAL_STORAGE}, 1001);
+                        }
+                    } catch (Throwable e) {
+                        try {
+                            startActivity(new android.content.Intent(
+                                    Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                        } catch (Throwable e2) {
+                            Toast.makeText(MainActivity.this,
+                                    "找不到授权页面，去「设置 → 应用 → 音乐下载台 → 权限」里手动打开",
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    }
+                }
+            });
+        }
+
+        /** 授权回来后重启本机引擎，让新目录生效。 */
+        @JavascriptInterface
+        public void restartLocal() {
+            runOnUiThread(new Runnable() {
+                public void run() {
+                    localUrl = "";
+                    bootLocal();
+                }
+            });
         }
 
         /** 曲库里这个文件的完整路径（手机上就是应用私有目录）。 */
         @JavascriptInterface
         public String filePath(String name) {
-            java.io.File f = new java.io.File(new java.io.File(getFilesDir(), "downloads"), safeName(name));
+            java.io.File f = new java.io.File(new java.io.File(dataRoot(), "downloads"), safeName(name));
             return f.getAbsolutePath();
         }
 
@@ -408,7 +484,7 @@ public class MainActivity extends Activity {
          */
         @JavascriptInterface
         public void openFile(final String name) {
-            final java.io.File f = new java.io.File(new java.io.File(getFilesDir(), "downloads"), safeName(name));
+            final java.io.File f = new java.io.File(new java.io.File(dataRoot(), "downloads"), safeName(name));
             if (!f.isFile()) {
                 toast("文件不在了");
                 return;
